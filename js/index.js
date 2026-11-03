@@ -1,4 +1,21 @@
-import { paperRect as paperRectFn, PAPER_WIDTH, PAPER_HEIGHT } from "./paper.js";
+import {
+	paperRect as paperRectFn,
+	PAPER_WIDTH,
+	PAPER_HEIGHT,
+	LINE_GAP,
+	TOP_MARGIN,
+	BOTTOM_MARGIN,
+	RIGHT_MARGIN,
+	LEFT_MARGIN,
+	MARGIN_LINE_X,
+	TEXT_OFFSET_FROM_MARGIN,
+	HOLE_X,
+	HOLE_RADIUS,
+	HOLE_SPACING,
+	FIRST_HOLE_Y,
+	FONT_SIZE,
+	FIT_PADDING,
+} from "./paper.js";
 
 const canvas = document.getElementById("canvas");
 const msg = document.getElementById("msg");
@@ -7,9 +24,8 @@ const resetBtn = document.getElementById("resetBtn");
 const isMobile = window.matchMedia("(pointer: coarse)").matches;
 const dprCap = isMobile ? Math.min(window.devicePixelRatio || 1, 1.5) : (window.devicePixelRatio || 1);
 
-function visibleSize() {
-	const vv = window.visualViewport;
-	return { w: vv ? vv.width : window.innerWidth, h: vv ? vv.height : window.innerHeight };
+function viewportSize() {
+	return { w: canvas.clientWidth, h: canvas.clientHeight };
 }
 
 const textarea = document.createElement("textarea");
@@ -37,13 +53,14 @@ let viewY = 0;
 let isPanning = false;
 let lastPointerX = 0;
 let lastPointerY = 0;
+const pointers = new Map();
 let pinchStartScale = 1;
 let pinchStartDist = 0;
 let pinchCenterX = 0;
 let pinchCenterY = 0;
 
 function resetView() {
-	const vs = visibleSize();
+	const vs = viewportSize();
 	const r = paperRectFn(vs.w, vs.h);
 	viewScale = r.scale;
 	viewX = r.left;
@@ -66,10 +83,6 @@ function paperToScreen(px, py) {
 }
 
 function clampView(vs) {
-	const minScale = 0.05;
-	const maxScale = 50;
-	viewScale = Math.max(minScale, Math.min(maxScale, viewScale));
-
 	const paperW = PAPER_WIDTH * viewScale;
 	const paperH = PAPER_HEIGHT * viewScale;
 	const maxX = vs.w - paperW;
@@ -88,40 +101,94 @@ function clampView(vs) {
 	}
 }
 
+function getPinchInfo() {
+	if (pointers.size < 2) return null;
+	const pts = Array.from(pointers.values());
+	const dx = pts[1].x - pts[0].x;
+	const dy = pts[1].y - pts[0].y;
+	const dist = Math.hypot(dx, dy);
+	const cx = (pts[0].x + pts[1].x) / 2;
+	const cy = (pts[0].y + pts[1].y) / 2;
+	return { dist, cx, cy };
+}
+
 canvas.addEventListener("pointerdown", (e) => {
 	if (e.target === resetBtn) return;
 	if (e.button !== 0 && e.button !== 1) return;
-	isPanning = true;
-	lastPointerX = e.clientX;
-	lastPointerY = e.clientY;
+
+	pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+	if (pointers.size === 1) {
+		isPanning = true;
+		lastPointerX = e.clientX;
+		lastPointerY = e.clientY;
+	} else if (pointers.size === 2) {
+		isPanning = false;
+		const pinch = getPinchInfo();
+		if (pinch) {
+			pinchStartDist = pinch.dist;
+			pinchCenterX = pinch.cx;
+			pinchCenterY = pinch.cy;
+			pinchStartScale = viewScale;
+		}
+	}
 	canvas.setPointerCapture(e.pointerId);
 	e.preventDefault();
 }, { passive: false });
 
 canvas.addEventListener("pointermove", (e) => {
-	if (!isPanning) return;
-	const dx = e.clientX - lastPointerX;
-	const dy = e.clientY - lastPointerY;
-	viewX += dx;
-	viewY += dy;
-	lastPointerX = e.clientX;
-	lastPointerY = e.clientY;
-	clampView(visibleSize());
-	scheduleLayoutAndRender();
+	pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+	const vs = viewportSize();
+
+	if (pointers.size === 1 && isPanning) {
+		const dx = e.clientX - lastPointerX;
+		const dy = e.clientY - lastPointerY;
+		viewX += dx;
+		viewY += dy;
+		lastPointerX = e.clientX;
+		lastPointerY = e.clientY;
+		clampView(vs);
+		scheduleLayoutAndRender();
+	} else if (pointers.size >= 2) {
+		isPanning = false;
+		const pinch = getPinchInfo();
+		if (pinch && pinchStartDist > 0) {
+			const scaleChange = pinch.dist / pinchStartDist;
+			const newScale = pinchStartScale * scaleChange;
+
+			const rect = canvas.getBoundingClientRect();
+			const centerX = pinch.cx - rect.left;
+			const centerY = pinch.cy - rect.top;
+			const paperBefore = screenToPaper(centerX, centerY);
+
+			viewScale = newScale;
+			clampView(vs);
+
+			const paperAfter = screenToPaper(centerX, centerY);
+			viewX += (paperBefore.x - paperAfter.x) * viewScale;
+			viewY += (paperBefore.y - paperAfter.y) * viewScale;
+			clampView(vs);
+			scheduleLayoutAndRender();
+		}
+	}
 }, { passive: true });
 
 canvas.addEventListener("pointerup", (e) => {
-	isPanning = false;
+	pointers.delete(e.pointerId);
+	if (pointers.size < 2) {
+		isPanning = false;
+	}
 	canvas.releasePointerCapture(e.pointerId);
 }, { passive: true });
 
 canvas.addEventListener("pointerleave", () => {
+	pointers.clear();
 	isPanning = false;
 }, { passive: true });
 
 canvas.addEventListener("wheel", (e) => {
 	e.preventDefault();
-	const vs = visibleSize();
+	const vs = viewportSize();
 	const rect = canvas.getBoundingClientRect();
 	const mouseX = e.clientX - rect.left;
 	const mouseY = e.clientY - rect.top;
@@ -136,45 +203,6 @@ canvas.addEventListener("wheel", (e) => {
 	clampView(vs);
 	scheduleLayoutAndRender();
 }, { passive: false });
-
-canvas.addEventListener("pointerdown", (e) => {
-	if (e.pointerType === "touch") {
-		const touches = e.targetTouches || [e];
-		if (touches.length === 2) {
-			const t1 = touches[0];
-			const t2 = touches[1];
-			pinchStartDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-			pinchCenterX = (t1.clientX + t2.clientX) / 2;
-			pinchCenterY = (t1.clientY + t2.clientY) / 2;
-			pinchStartScale = viewScale;
-			isPanning = false;
-		}
-	}
-}, { passive: true });
-
-canvas.addEventListener("pointermove", (e) => {
-	if (e.pointerType === "touch" && e.targetTouches && e.targetTouches.length === 2) {
-		const t1 = e.targetTouches[0];
-		const t2 = e.targetTouches[1];
-		const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-		if (pinchStartDist > 0) {
-			const vs = visibleSize();
-			const scaleChange = dist / pinchStartDist;
-			viewScale = pinchStartScale * scaleChange;
-			clampView(vs);
-
-			const rect = canvas.getBoundingClientRect();
-			const centerX = pinchCenterX - rect.left;
-			const centerY = pinchCenterY - rect.top;
-			const paperBefore = screenToPaper(centerX, centerY);
-			const paperAfter = screenToPaper(centerX, centerY);
-			viewX += (paperBefore.x - paperAfter.x) * viewScale;
-			viewY += (paperBefore.y - paperAfter.y) * viewScale;
-			clampView(vs);
-			scheduleLayoutAndRender();
-		}
-	}
-}, { passive: true });
 
 resetBtn.addEventListener("click", resetView);
 resetBtn.addEventListener("keydown", (e) => {
@@ -222,49 +250,41 @@ window.addEventListener("keydown", (e) => {
 	paper.height = PAPER_HEIGHT;
 	const ctx = paper.getContext("2d");
 
-	const lineGap = Math.round(PAPER_HEIGHT / 96);
-	const topMargin = Math.round(PAPER_HEIGHT * 0.0288);
-	const bottomMargin = Math.round(PAPER_HEIGHT * 0.0192);
-	const leftMargin = Math.round(PAPER_WIDTH * 0.0318);
-	const rightMargin = Math.round(PAPER_WIDTH * 0.0227);
-	const marginLineX = Math.round(PAPER_WIDTH * 0.0477);
-	const holeRadius = Math.round(PAPER_WIDTH * 0.0034);
-	const holeX = Math.round(PAPER_WIDTH * 0.017);
-	const holeSpacing = Math.round(PAPER_HEIGHT * 0.064);
-	const firstHoleY = Math.round(PAPER_HEIGHT * 0.032);
-
 	function drawPaper(text) {
 		ctx.fillStyle = "#fefdf8";
 		ctx.fillRect(0, 0, paper.width, paper.height);
 
 		ctx.strokeStyle = "#e0dbc8";
 		ctx.lineWidth = Math.max(1, Math.round(PAPER_HEIGHT / 2500));
-		for (let y = topMargin; y < paper.height - bottomMargin; y += lineGap) {
+		for (let y = TOP_MARGIN; y < paper.height - BOTTOM_MARGIN; y += LINE_GAP) {
 			ctx.beginPath();
-			ctx.moveTo(leftMargin, y);
-			ctx.lineTo(paper.width - rightMargin, y);
+			ctx.moveTo(LEFT_MARGIN, y);
+			ctx.lineTo(paper.width - RIGHT_MARGIN, y);
 			ctx.stroke();
 		}
 
 		ctx.strokeStyle = "#d46b6b";
 		ctx.lineWidth = Math.max(1, Math.round(PAPER_WIDTH / 1466));
 		ctx.beginPath();
-		ctx.moveTo(marginLineX, topMargin);
-		ctx.lineTo(marginLineX, paper.height - bottomMargin);
+		ctx.moveTo(MARGIN_LINE_X, TOP_MARGIN);
+		ctx.lineTo(MARGIN_LINE_X, paper.height - BOTTOM_MARGIN);
 		ctx.stroke();
 
 		ctx.fillStyle = "#d46b6b";
-		for (let hy = firstHoleY; hy < paper.height - bottomMargin; hy += holeSpacing) {
+		for (let hy = FIRST_HOLE_Y; hy < paper.height - BOTTOM_MARGIN; hy += HOLE_SPACING) {
 			ctx.beginPath();
-			ctx.arc(holeX, hy, holeRadius, 0, Math.PI * 2);
+			ctx.arc(HOLE_X, hy, HOLE_RADIUS, 0, Math.PI * 2);
 			ctx.fill();
 		}
 
 		ctx.fillStyle = "#2d2d2d";
-		const fontSize = Math.round(PAPER_HEIGHT / 166);
-		ctx.font = `${fontSize}px monospace`;
+		ctx.font = `${FONT_SIZE}px monospace`;
+		ctx.textBaseline = "alphabetic";
+		const textX = MARGIN_LINE_X + TEXT_OFFSET_FROM_MARGIN;
+		const baselineOffset = Math.round(FONT_SIZE * 0.8);
 		text.split("\n").forEach((line, i) => {
-			ctx.fillText(line, leftMargin + Math.round(PAPER_WIDTH / 50), topMargin + i * lineGap);
+			const y = TOP_MARGIN + i * LINE_GAP + baselineOffset;
+			ctx.fillText(line, textX, y);
 		});
 	}
 
@@ -325,6 +345,7 @@ struct VSOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 	});
 
 	let configured = false;
+	let fitScale = 1;
 	function resize() {
 		const dpr = isMobile ? dprCap : (window.devicePixelRatio || 1);
 		canvas.width = Math.floor(window.innerWidth * dpr);
@@ -333,11 +354,14 @@ struct VSOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 			context.configure({ device, format, alphaMode: "premultiplied" });
 			configured = true;
 		}
-		const vs = visibleSize();
+		const vs = viewportSize();
 		const r = paperRectFn(vs.w, vs.h);
-		viewScale = r.scale;
-		viewX = r.left;
-		viewY = r.top;
+		fitScale = r.scale;
+		if (viewScale <= fitScale * 1.001) {
+			viewScale = r.scale;
+			viewX = r.left;
+			viewY = r.top;
+		}
 	}
 	resize();
 	window.addEventListener("resize", resize);
@@ -364,12 +388,12 @@ struct VSOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 		const paperH = PAPER_HEIGHT * viewScale;
 		const scale = viewScale;
 
-		textarea.style.left = (paperLeft + leftMargin * scale + Math.round(PAPER_WIDTH / 50) * scale) + "px";
-		textarea.style.top = (paperTop + topMargin * scale) + "px";
-		textarea.style.width = (paperW - leftMargin * scale - rightMargin * scale - Math.round(PAPER_WIDTH / 50) * scale * 2) + "px";
-		textarea.style.height = (paperH - topMargin * scale - bottomMargin * scale) + "px";
-		textarea.style.lineHeight = (lineGap * scale) + "px";
-		textarea.style.fontSize = (Math.round(PAPER_HEIGHT / 166) * scale) + "px";
+		textarea.style.left = (paperLeft + LEFT_MARGIN * scale + TEXT_OFFSET_FROM_MARGIN * scale) + "px";
+		textarea.style.top = (paperTop + TOP_MARGIN * scale) + "px";
+		textarea.style.width = (paperW - LEFT_MARGIN * scale - RIGHT_MARGIN * scale - TEXT_OFFSET_FROM_MARGIN * scale * 2) + "px";
+		textarea.style.height = (paperH - TOP_MARGIN * scale - BOTTOM_MARGIN * scale) + "px";
+		textarea.style.lineHeight = (LINE_GAP * scale) + "px";
+		textarea.style.fontSize = (FONT_SIZE * scale) + "px";
 	}
 	function scheduleLayoutAndRender() {
 		if (layoutScheduled) return;
@@ -382,17 +406,33 @@ struct VSOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 	}
 	layoutOverlay();
 	window.addEventListener("resize", scheduleLayoutAndRender);
-	if (window.visualViewport) {
-		window.visualViewport.addEventListener("resize", scheduleLayoutAndRender);
-	}
-	if (isMobile) {
-		canvas.addEventListener("pointerdown", () => textarea.focus(), { passive: true });
-	}
+
+	let tapTimeout = 0;
+	canvas.addEventListener("pointerdown", (e) => {
+		if (e.pointerType === "touch" && pointers.size === 1) {
+			tapTimeout = setTimeout(() => {
+				const rect = canvas.getBoundingClientRect();
+				const paperLeft = viewX;
+				const paperTop = viewY;
+				const paperW = PAPER_WIDTH * viewScale;
+				const paperH = PAPER_HEIGHT * viewScale;
+				const x = e.clientX - rect.left;
+				const y = e.clientY - rect.top;
+				if (x >= paperLeft && x <= paperLeft + paperW && y >= paperTop && y <= paperTop + paperH) {
+					textarea.focus();
+				}
+			}, 150);
+		}
+	}, { passive: true });
+
+	canvas.addEventListener("pointerup", () => {
+		clearTimeout(tapTimeout);
+	}, { passive: true });
 
 	function render() {
 		if (!device || !context) return;
 		try {
-			const vs = visibleSize();
+			const vs = viewportSize();
 			const paperW = PAPER_WIDTH * viewScale;
 			const paperH = PAPER_HEIGHT * viewScale;
 			const sx = paperW / vs.w;
@@ -432,6 +472,3 @@ struct VSOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 	msg.textContent = "Click to type. Pan: drag. Zoom: wheel / pinch. Reset: button or R";
 	console.log("Initialization complete");
 })();
-
-
-
