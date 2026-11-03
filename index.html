@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>B5 Notebook Paper</title>
+<style>
+html,body{margin:0;height:100%;background:#e8e4dc;font-family:sans-serif;overflow:hidden}
+#canvas{display:block;width:100vw;height:100vh;touch-action:none}
+#msg{position:fixed;top:10px;left:10px;color:#333;pointer-events:none;z-index:10}
+#resetBtn{position:fixed;bottom:20px;right:20px;width:48px;height:48px;border-radius:50%;background:#fff;border:1px solid #d0d0d0;box-shadow:0 2px 8px rgba(0,0,0,0.15);cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:10;transition:background 0.15s,border-color 0.15s,transform 0.1s}
+#resetBtn:hover{background:#f5f5f0;border-color:#c0c0c0}
+#resetBtn:active{transform:scale(0.95)}
+#resetBtn svg{width:24px;height:24px;color:#444}
+#resetBtn:focus-visible{outline:2px solid #4a90d9;outline-offset:2px}
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="msg"></div>
+<button id="resetBtn" aria-label="Reset view" title="Reset view (R)">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+<path d="M21 12a9 9 0 1 1-9 9 9.75 9.75 0 0 1 6.74-2.74L21 16"></path>
+</svg>
+</button>
+<script type="module" src="js/index.js"></script>
+</body>
+</html>
