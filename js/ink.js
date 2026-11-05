@@ -14,14 +14,15 @@ import {
 const INK = [28, 38, 58];
 const INK_DARK = [12, 18, 34];
 const BASELINE_OFFSET = -1.5 * MM;
+const LINE_BASELINE = LINE_GAP + BASELINE_OFFSET;
 const GRAIN_SIZE = 512;
 const BLOTCH_SIZE = 24;
+const MAX_LINE_CACHE = 300;
 const ASCII = /^[\x20-\x7E]*$/;
 
-let inkCanvas = null;
-let inkCtx = null;
-let inkKey = null;
-let grainPattern = null;
+const lineCache = new Map();
+const inkPages = new Map();
+let grainTile = null;
 
 function inkColor(shade = 1, rgb = INK) {
 	return `rgb(${Math.round(rgb[0] * shade)}, ${Math.round(rgb[1] * shade)}, ${Math.round(rgb[2] * shade)})`;
@@ -39,10 +40,20 @@ function makeRandom(seed) {
 	};
 }
 
+function hashLine(text) {
+	let h = 2166136261;
+	for (let i = 0; i < text.length; i++) {
+		h ^= text.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return h >>> 0;
+}
+
 // Tileable paper-fibre grain plus soft density blotches. Drawn with
 // destination-out it nibbles tiny holes into the ink, like real ink sitting
 // on top of paper fibre instead of a flat vector fill.
-function createGrainPattern(c) {
+function ensureGrain() {
+	if (grainTile) return;
 	const tile = document.createElement("canvas");
 	tile.width = GRAIN_SIZE;
 	tile.height = GRAIN_SIZE;
@@ -77,9 +88,7 @@ function createGrainPattern(c) {
 	g.imageSmoothingEnabled = true;
 	g.globalAlpha = 0.55;
 	g.drawImage(blotch, 0, 0, GRAIN_SIZE, GRAIN_SIZE);
-
-	const pattern = c.createPattern(tile, "repeat");
-	return pattern;
+	grainTile = tile;
 }
 
 export function inkBaselineY(lineIndex) {
@@ -89,118 +98,132 @@ export function inkBaselineY(lineIndex) {
 // Broad, soft bleed under the glyph edges: what ink does when it soaks into
 // paper. Drawn once per line so it stays coherent, then the crisp body covers
 // the middle and leaves a faint wet halo.
-function drawBleed(g, wrapped) {
-	const textX = LEFT_MARGIN + TEXT_INSET;
-	const rand = makeRandom(0x2f6e1b93);
-
+function drawBleed(g, line, baseline, seed) {
+	const rand = makeRandom(seed ^ 0x2f6e1b93);
 	g.save();
 	g.globalCompositeOperation = "source-over";
 	g.shadowColor = `rgba(${INK[0]}, ${INK[1]}, ${INK[2]}, 0.55)`;
 	g.shadowBlur = Math.max(1.2, MM * 0.38);
 	g.globalAlpha = 0.55;
 	g.fillStyle = inkColor(0.75);
-
-	for (let lineIndex = 0; lineIndex < wrapped.length; lineIndex++) {
-		const line = wrapped[lineIndex];
-		const y = inkBaselineY(lineIndex) + (rand() - 0.5) * 0.5;
-		g.fillText(line, textX, y);
-	}
+	g.fillText(line, LEFT_MARGIN + TEXT_INSET, baseline + (rand() - 0.5) * 0.5);
 	g.restore();
 }
 
 // Exact same x advance and baseline as the original fillText layout, but each
 // glyph gets its own ink load, a sub-pixel wobble and sometimes a darker
 // pooled spot. Positions do not move enough to affect the caret.
-function drawCharacters(g, wrapped) {
+function drawCharacters(g, line, baseline, seed) {
+	const rand = makeRandom(seed ^ 0x51ed270b);
 	const textX = LEFT_MARGIN + TEXT_INSET;
-	const rand = makeRandom(0x51ed270b);
+	const y = baseline + (rand() - 0.5) * 0.8;
 
-	for (let lineIndex = 0; lineIndex < wrapped.length; lineIndex++) {
-		const line = wrapped[lineIndex];
-		const y = inkBaselineY(lineIndex) + (rand() - 0.5) * 0.8;
+	if (!ASCII.test(line)) {
+		// Leave complex scripts to the browser's shaper; only vary density.
+		const shade = 0.88 + rand() * 0.16;
+		g.globalAlpha = 0.88 + rand() * 0.12;
+		g.fillStyle = inkColor(shade);
+		g.fillText(line, textX, y);
+		return;
+	}
 
-		if (!ASCII.test(line)) {
-			// Leave complex scripts to the browser's shaper; only vary density.
-			const shade = 0.88 + rand() * 0.16;
-			g.globalAlpha = 0.88 + rand() * 0.12;
+	let x = textX;
+	for (let charIndex = 0; charIndex < line.length; charIndex++) {
+		const ch = line[charIndex];
+		const width = g.measureText(ch).width;
+		if (ch !== " ") {
+			const shade = (1 - 0.08 * (charIndex / Math.max(1, line.length))) * (0.86 + rand() * 0.16);
+			const alpha = 0.82 + rand() * 0.18;
+			const dx = (rand() - 0.5) * 0.6;
+			const dy = (rand() - 0.5) * 0.9;
+
+			g.globalAlpha = alpha;
 			g.fillStyle = inkColor(shade);
-			g.fillText(line, textX, y);
-			continue;
-		}
+			g.fillText(ch, x + dx, y + dy);
 
-		let x = textX;
-		for (let charIndex = 0; charIndex < line.length; charIndex++) {
-			const ch = line[charIndex];
-			const width = g.measureText(ch).width;
-			if (ch !== " ") {
-				const shade = (1 - 0.08 * (charIndex / Math.max(1, line.length))) * (0.86 + rand() * 0.16);
-				const alpha = 0.82 + rand() * 0.18;
-				const dx = (rand() - 0.5) * 0.6;
-				const dy = (rand() - 0.5) * 0.9;
-
-				g.globalAlpha = alpha;
-				g.fillStyle = inkColor(shade);
+			// A few glyphs carry a darker blob where the pen slowed down.
+			if (rand() > 0.9) {
+				g.globalAlpha = 0.35 + rand() * 0.25;
+				g.fillStyle = inkColor(0.65, INK_DARK);
 				g.fillText(ch, x + dx, y + dy);
-
-				// A few glyphs carry a darker blob where the pen slowed down.
-				if (rand() > 0.9) {
-					g.globalAlpha = 0.35 + rand() * 0.25;
-					g.fillStyle = inkColor(0.65, INK_DARK);
-					g.fillText(ch, x + dx, y + dy);
-				}
 			}
-			x += width;
 		}
+		x += width;
 	}
 }
 
-function buildInkLayer(wrapped) {
-	inkCtx.setTransform(1, 0, 0, 1, 0, 0);
-	inkCtx.globalCompositeOperation = "source-over";
-	inkCtx.globalAlpha = 1;
-	inkCtx.shadowBlur = 0;
-	inkCtx.clearRect(0, 0, PAPER_WIDTH, PAPER_HEIGHT);
-	inkCtx.font = FONT_SIZE + "px monospace";
-	inkCtx.textBaseline = "alphabetic";
-	inkCtx.imageSmoothingEnabled = true;
+function getLineCanvas(text, quality) {
+	if (text === "") return null;
+	const key = quality + "\u0000" + text;
+	const cached = lineCache.get(key);
+	if (cached) return cached;
 
-	drawBleed(inkCtx, wrapped);
-	drawCharacters(inkCtx, wrapped);
+	const canvas = document.createElement("canvas");
+	canvas.width = Math.max(1, Math.round(PAPER_WIDTH * quality));
+	canvas.height = Math.max(1, Math.round(LINE_GAP * quality));
+	const g = canvas.getContext("2d");
+	g.scale(quality, quality);
+	g.font = FONT_SIZE + "px monospace";
+	g.textBaseline = "alphabetic";
+	g.imageSmoothingEnabled = true;
 
-	// Paper-fibre erosion.
-	if (grainPattern) {
-		inkCtx.globalCompositeOperation = "destination-out";
-		inkCtx.globalAlpha = 1;
-		inkCtx.fillStyle = grainPattern;
-		inkCtx.fillRect(0, 0, PAPER_WIDTH, PAPER_HEIGHT);
-		inkCtx.globalCompositeOperation = "source-over";
-	}
-}
+	const seed = hashLine(text);
+	drawBleed(g, text, LINE_BASELINE, seed);
+	drawCharacters(g, text, LINE_BASELINE, seed);
 
-function ensureLayer() {
-	if (inkCanvas) return;
-	inkCanvas = document.createElement("canvas");
-	inkCanvas.width = PAPER_WIDTH;
-	inkCanvas.height = PAPER_HEIGHT;
-	inkCtx = inkCanvas.getContext("2d");
-	grainPattern = createGrainPattern(inkCtx);
-}
-
-// Draw the cached ink layer onto the page. Multiply blending lets the ink
-// darken the ruled lines and paper grain underneath, like real ink.
-export function drawInkText(target, wrapped) {
-	const key = wrapped.join("\n");
-	ensureLayer();
-	if (key !== inkKey) {
-		inkKey = key;
-		buildInkLayer(wrapped);
+	ensureGrain();
+	const pattern = g.createPattern(grainTile, "repeat");
+	if (pattern) {
+		g.globalCompositeOperation = "destination-out";
+		g.globalAlpha = 1;
+		g.fillStyle = pattern;
+		g.fillRect(0, 0, PAPER_WIDTH, LINE_GAP);
+		g.globalCompositeOperation = "source-over";
 	}
 
-	const prevComposite = target.globalCompositeOperation;
-	const prevSmoothing = target.imageSmoothingQuality;
-	target.globalCompositeOperation = "multiply";
-	target.imageSmoothingQuality = "high";
-	target.drawImage(inkCanvas, 0, 0);
-	target.globalCompositeOperation = prevComposite;
-	target.imageSmoothingQuality = prevSmoothing;
+	if (lineCache.size >= MAX_LINE_CACHE) lineCache.delete(lineCache.keys().next().value);
+	lineCache.set(key, canvas);
+	return canvas;
+}
+
+function getPage(quality) {
+	let page = inkPages.get(quality);
+	if (page) return page;
+
+	const canvas = document.createElement("canvas");
+	canvas.width = Math.max(1, Math.round(PAPER_WIDTH * quality));
+	canvas.height = Math.max(1, Math.round(PAPER_HEIGHT * quality));
+	page = { canvas, ctx: canvas.getContext("2d"), keys: [] };
+	inkPages.set(quality, page);
+	return page;
+}
+
+// Returns a transparent page-sized ink layer. Only rows whose line text
+// changed are rasterized again; unchanged lines are reused from lineCache.
+export function getInkPage(wrapped, quality = 1) {
+	const page = getPage(quality);
+	const ctx = page.ctx;
+	ctx.globalCompositeOperation = "source-over";
+	ctx.globalAlpha = 1;
+
+	const lineH = Math.max(1, Math.round(LINE_GAP * quality));
+	const max = Math.max(page.keys.length, wrapped.length);
+	for (let i = 0; i < max; i++) {
+		const text = i < wrapped.length ? wrapped[i] : null;
+		if (page.keys[i] === text) continue;
+
+		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP) * quality);
+		ctx.clearRect(0, rowY, page.canvas.width, lineH);
+		if (text) {
+			const lineCanvas = getLineCanvas(text, quality);
+			if (lineCanvas) ctx.drawImage(lineCanvas, 0, rowY);
+		}
+		page.keys[i] = text;
+	}
+	page.keys.length = wrapped.length;
+	return page.canvas;
+}
+
+export function releaseInkPage(quality = 1) {
+	inkPages.delete(quality);
 }

@@ -16,7 +16,7 @@ import {
 	FONT_SIZE,
 	MM,
 } from "./paper.js";
-import { drawInkText } from "./ink.js";
+import { getInkPage, releaseInkPage } from "./ink.js";
 import { splitPage, wrapText } from "./text.js";
 
 const canvas = document.getElementById("canvas");
@@ -66,11 +66,18 @@ const STORAGE_KEY = "b5-notebook-v1";
 
 let ctx;
 let bgCanvas, bgCtx;
+let pageCanvas = null;
+let pageCtx = null;
 let dpr = 1;
 let dirty = true;
+let pageDirty = true;
 let rafId = null;
+let pendingKeystrokePerf = false;
+let frameCount = 0;
 
 const isMobile = window.matchMedia("(pointer: coarse)").matches;
+const INK_QUALITY = isMobile ? 0.5 : 1;
+const SCREEN_QUALITY = isMobile ? 0.75 : 1;
 
 // Measure the same monospace font the textarea uses. The textarea has to place
 // its first baseline exactly where the canvas draws line 0.
@@ -222,18 +229,55 @@ function drawBackground(c) {
 	}
 }
 
-function drawText(c, text) {
-	c.font = FONT_SIZE + "px monospace";
-	c.textBaseline = "alphabetic";
-	const textX = LEFT_MARGIN + TEXT_INSET;
-	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - textX;
-	const wrapped = wrapText(text, maxWidth, c);
-	drawInkText(c, wrapped);
-	return wrapped.length;
+function wrappedPage(text, measure) {
+	measure.font = FONT_SIZE + "px monospace";
+	measure.textBaseline = "alphabetic";
+	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
+	return wrapText(text, maxWidth, measure);
+}
+
+function rebuildPageCache() {
+	if (!ctx || !bgCanvas) return;
+
+	const t0 = isMobile ? performance.now() : 0;
+	if (!pageCanvas) {
+		pageCanvas = document.createElement("canvas");
+		pageCanvas.width = Math.max(1, Math.round(PAPER_WIDTH * SCREEN_QUALITY));
+		pageCanvas.height = Math.max(1, Math.round(PAPER_HEIGHT * SCREEN_QUALITY));
+		pageCtx = pageCanvas.getContext("2d");
+	}
+
+	const wrapped = wrappedPage(pages[currentPage], ctx);
+	const ink = getInkPage(wrapped, INK_QUALITY);
+
+	pageCtx.setTransform(1, 0, 0, 1, 0, 0);
+	pageCtx.globalCompositeOperation = "source-over";
+	pageCtx.globalAlpha = 1;
+	pageCtx.clearRect(0, 0, pageCanvas.width, pageCanvas.height);
+	pageCtx.imageSmoothingEnabled = true;
+	pageCtx.drawImage(bgCanvas, 0, 0, pageCanvas.width, pageCanvas.height);
+	pageCtx.globalCompositeOperation = "multiply";
+	pageCtx.drawImage(ink, 0, 0, pageCanvas.width, pageCanvas.height);
+	pageCtx.globalCompositeOperation = "source-over";
+
+	pageDirty = false;
+	if (isMobile) {
+		const ms = performance.now() - t0;
+		if (pendingKeystrokePerf) {
+			pendingKeystrokePerf = false;
+			console.log(`[perf] keystroke redraw ${ms.toFixed(1)}ms`);
+		} else {
+			console.log(`[perf] page rebuild ${ms.toFixed(1)}ms`);
+		}
+		window.__b5perf = { keystrokeMs: ms, pageMs: ms };
+	}
 }
 
 function render() {
 	if (!ctx) return;
+
+	const t0 = isMobile ? performance.now() : 0;
+	if (pageDirty) rebuildPageCache();
 
 	ctx.save();
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -245,8 +289,7 @@ function render() {
 	ctx.translate(viewX, viewY);
 	ctx.scale(viewScale, viewScale);
 
-	if (bgCanvas) ctx.drawImage(bgCanvas, 0, 0);
-	drawText(ctx, pages[currentPage]);
+	if (pageCanvas) ctx.drawImage(pageCanvas, 0, 0, PAPER_WIDTH, PAPER_HEIGHT);
 
 	ctx.restore();
 
@@ -265,6 +308,14 @@ function render() {
 	textarea.style.paddingTop = Math.max(0, padTop) + "px";
 
 	dirty = false;
+	if (isMobile && pointers.size > 0) {
+		frameCount++;
+		if (frameCount % 30 === 0) {
+			const ms = performance.now() - t0;
+			console.log(`[perf] pan frame ${ms.toFixed(1)}ms`);
+			window.__b5perf = { ...(window.__b5perf || {}), panMs: ms };
+		}
+	}
 }
 
 function animate(now) {
@@ -648,6 +699,7 @@ function restoreState(state) {
 	currentPage = Math.max(0, Math.min(pages.length - 1, state.currentPage));
 	textarea.value = pages[currentPage];
 	dirty = true;
+	pageDirty = true;
 	scheduleRender();
 	updatePageUI();
 	saveState();
@@ -671,6 +723,8 @@ textarea.addEventListener("input", () => {
 	queueUndo();
 	pages[currentPage] = textarea.value;
 	dirty = true;
+	pageDirty = true;
+	pendingKeystrokePerf = true;
 	scheduleRender();
 	checkPageFlow();
 	saveState();
@@ -700,6 +754,7 @@ function checkPageFlow() {
 
 	updatePageUI();
 	dirty = true;
+	pageDirty = true;
 	scheduleRender();
 }
 
@@ -729,6 +784,7 @@ btnPrev.addEventListener("click", () => {
 		currentPage--;
 		textarea.value = pages[currentPage];
 		dirty = true;
+		pageDirty = true;
 		scheduleRender();
 		updatePageUI();
 		saveState();
@@ -739,6 +795,7 @@ btnNext.addEventListener("click", () => {
 		currentPage++;
 		textarea.value = pages[currentPage];
 		dirty = true;
+		pageDirty = true;
 		scheduleRender();
 		updatePageUI();
 		saveState();
@@ -840,7 +897,15 @@ function exportPage() {
 	out.height = PAPER_HEIGHT;
 	const outCtx = out.getContext("2d");
 	drawBackground(outCtx);
-	drawText(outCtx, pages[currentPage]);
+
+	// Export always uses the full-resolution ink layer, even on phones where
+	// the on-screen layer is half size.
+	const wrapped = wrappedPage(pages[currentPage], outCtx);
+	const ink = getInkPage(wrapped, 1);
+	outCtx.globalCompositeOperation = "multiply";
+	outCtx.drawImage(ink, 0, 0);
+	outCtx.globalCompositeOperation = "source-over";
+	releaseInkPage(1);
 
 	const filename = `page-${currentPage + 1}.png`;
 	downloadCanvas(out, filename);
@@ -859,6 +924,7 @@ function createBackgroundCache() {
 	bgCanvas.height = PAPER_HEIGHT;
 	drawBackground(bgCtx);
 	dirty = true;
+	pageDirty = true;
 }
 
 const ro = new ResizeObserver(() => {
