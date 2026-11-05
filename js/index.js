@@ -883,24 +883,53 @@ if (window.visualViewport) {
 	window.visualViewport.addEventListener("scroll", onViewportChange);
 }
 
-// Move overflowing text from the last page onto a new page.
+// Move overflow forward from the page being edited through every following
+// page. Editing page 2 of 5 pushes its overflow into page 3 instead of only
+// working on the last page.
 function checkPageFlow() {
-	if (currentPage !== pages.length - 1) return;
-
 	ctx.font = FONT_SIZE + "px monospace";
 	const maxLines = Math.floor((PAPER_HEIGHT - TOP_MARGIN - BOTTOM_MARGIN) / LINE_GAP);
 	const textX = LEFT_MARGIN + TEXT_INSET;
 	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - textX;
-	const split = splitPage(textarea.value, maxWidth, maxLines, ctx);
-	if (!split) return;
 
-	pages[currentPage] = split.head;
-	pages.push(split.tail);
-	currentPage = pages.length - 1;
+	let caret = textarea.selectionStart;
+	let caretPage = currentPage;
+	let page = currentPage;
+	let carry = null;
+	let splitAny = false;
 
-	const caret = Math.max(0, Math.min(split.tail.length, textarea.selectionStart - split.cut));
-	textarea.value = split.tail;
-	textarea.setSelectionRange(caret, caret);
+	while (page < pages.length) {
+		let text = pages[page];
+		if (carry !== null) {
+			text = carry + text;
+			pages[page] = text;
+			carry = null;
+		}
+
+		const split = splitPage(text, maxWidth, maxLines, ctx);
+		if (!split) break;
+
+		splitAny = true;
+		pages[page] = split.head;
+		if (caretPage === page && caret >= split.cut) {
+			caretPage = page + 1;
+			caret -= split.cut;
+		}
+		carry = split.tail;
+		page++;
+	}
+
+	if (carry !== null) {
+		pages.push(carry);
+		splitAny = true;
+	}
+
+	if (!splitAny) return;
+
+	currentPage = Math.min(caretPage, pages.length - 1);
+	textarea.value = pages[currentPage];
+	const pos = Math.max(0, Math.min(caret, textarea.value.length));
+	textarea.setSelectionRange(pos, pos);
 
 	updatePageUI();
 	dirty = true;

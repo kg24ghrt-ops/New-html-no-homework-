@@ -1,13 +1,26 @@
 // Text layout shared by drawing and page splitting. `measure` is any object
 // with a measureText(str).width method (a canvas 2d context in the app).
 
+// Grapheme clusters keep combining marks attached to their base character.
+// That matters for Burmese/Myanmar and other scripts where one visible glyph
+// is several code points.
+const graphemeSegmenter =
+	typeof Intl !== "undefined" && Intl.Segmenter
+		? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+		: null;
+
+function graphemes(text) {
+	if (!graphemeSegmenter) return Array.from(text);
+	return Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
+}
+
 function fitWord(word, maxWidth, result, measure) {
 	if (measure.measureText(word).width <= maxWidth) {
 		result.push(word);
 		return;
 	}
 	let chunk = "";
-	for (const ch of word) {
+	for (const ch of graphemes(word)) {
 		const t2 = chunk + ch;
 		if (measure.measureText(t2).width <= maxWidth) {
 			chunk = t2;

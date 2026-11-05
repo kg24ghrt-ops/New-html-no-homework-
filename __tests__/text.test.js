@@ -15,6 +15,11 @@ describe("text wrapping", () => {
 	test("breaks a word that is wider than the line", () => {
 		expect(wrapText("abcdefgh", 30, measure)).toEqual(["abc", "def", "gh"]);
 	});
+
+	test("does not split a combining mark from its base character", () => {
+		// "a" + combining acute, twice. Each visible cluster is two code units.
+		expect(wrapText("a\u0301b\u0301", 10, measure)).toEqual(["a\u0301", "b\u0301"]);
+	});
 });
 
 describe("page splitting", () => {
