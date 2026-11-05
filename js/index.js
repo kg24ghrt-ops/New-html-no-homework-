@@ -39,6 +39,12 @@ let animDur = 0;
 let animFrom = { scale: 1, x: 0, y: 0 };
 let animTo = { scale: 1, x: 0, y: 0 };
 
+const dragSamples = [];
+const INERTIA_WINDOW = 80;
+const INERTIA_MAX_AGE = 100;
+const FRAME_MS = 1000 / 60;
+const MAX_OVERSCROLL = 80;
+
 let vx = 0;
 let vy = 0;
 
@@ -318,7 +324,20 @@ function render() {
 	}
 }
 
+function springAxis(pos, vel, min, max) {
+	const clamped = Math.min(max, Math.max(min, pos));
+	if (pos < clamped - 0.5 || pos > clamped + 0.5) {
+		// Ease back from overscroll without any bounce.
+		return { pos: pos + (clamped - pos) * 0.18, vel: 0, moving: true };
+	}
+	if (Math.abs(vel) > 0.1) {
+		return { pos: pos + vel, vel: vel * 0.92, moving: true };
+	}
+	return { pos: clamped, vel: 0, moving: false };
+}
+
 function animate(now) {
+	let moving = false;
 	if (animating) {
 		const t = Math.min(1, (now - animStart) / animDur);
 		const eased = easeOutCubic(t);
@@ -332,23 +351,24 @@ function animate(now) {
 			animating = false;
 		}
 		dirty = true;
-	} else if (Math.abs(vx) > 0.1 || Math.abs(vy) > 0.1) {
-		viewX += vx;
-		viewY += vy;
-		vx *= 0.92;
-		vy *= 0.92;
-		dirty = true;
-	} else {
-		vx = 0;
-		vy = 0;
+		moving = true;
+	} else if (pointers.size === 0) {
+		const bounds = viewBounds();
+		const sx = springAxis(viewX, vx, bounds.xMin, bounds.xMax);
+		const sy = springAxis(viewY, vy, bounds.yMin, bounds.yMax);
+		if (sx.pos !== viewX || sy.pos !== viewY) dirty = true;
+		viewX = sx.pos;
+		viewY = sy.pos;
+		vx = sx.vel;
+		vy = sy.vel;
+		moving = sx.moving || sy.moving;
 	}
 
-	clampView();
 	if (dirty) {
 		render();
 	}
 
-	if (animating || Math.abs(vx) > 0.1 || Math.abs(vy) > 0.1 || dirty) {
+	if (moving || dirty) {
 		rafId = requestAnimationFrame(animate);
 	} else {
 		rafId = null;
@@ -389,9 +409,55 @@ function clampView() {
 	}
 }
 
+function viewBounds() {
+	const vs = { w: canvas.clientWidth, h: canvas.clientHeight };
+	const paperW = PAPER_WIDTH * viewScale;
+	const paperH = PAPER_HEIGHT * viewScale;
+	return {
+		xMin: paperW < vs.w ? (vs.w - paperW) / 2 : vs.w - paperW,
+		xMax: paperW < vs.w ? (vs.w - paperW) / 2 : 0,
+		yMin: paperH < vs.h ? (vs.h - paperH) / 2 : vs.h - paperH,
+		yMax: paperH < vs.h ? (vs.h - paperH) / 2 : 0,
+	};
+}
+
+function clampPosition(scale, x, y) {
+	const vs = { w: canvas.clientWidth, h: canvas.clientHeight };
+	const paperW = PAPER_WIDTH * scale;
+	const paperH = PAPER_HEIGHT * scale;
+	if (paperW < vs.w) x = (vs.w - paperW) / 2;
+	else x = Math.max(vs.w - paperW, Math.min(0, x));
+	if (paperH < vs.h) y = (vs.h - paperH) / 2;
+	else y = Math.max(vs.h - paperH, Math.min(0, y));
+	return { x, y };
+}
+
+function recordDragSample(x, y, now) {
+	dragSamples.push({ x, y, t: now });
+	const cutoff = now - INERTIA_WINDOW;
+	while (dragSamples.length > 2 && dragSamples[0].t < cutoff) dragSamples.shift();
+}
+
+// Velocity is the displacement over the last ~80ms, in pixels per frame. A
+// stale last sample means the finger rested before lifting, so no fling.
+function startInertia(now) {
+	if (dragSamples.length < 2) return;
+	const last = dragSamples[dragSamples.length - 1];
+	if (now - last.t > INERTIA_MAX_AGE) return;
+
+	const first = dragSamples[0];
+	const dt = last.t - first.t;
+	if (dt < 8) return;
+
+	const max = 70;
+	vx = Math.max(-max, Math.min(max, ((last.x - first.x) / dt) * FRAME_MS));
+	vy = Math.max(-max, Math.min(max, ((last.y - first.y) / dt) * FRAME_MS));
+}
+
 function startAnimTo(scale, x, y, dur = 220) {
+	const target = clampPosition(scale, x, y);
 	animFrom = { scale: viewScale, x: viewX, y: viewY };
-	animTo = { scale, x, y };
+	animTo = { scale, x: target.x, y: target.y };
 	animStart = performance.now();
 	animDur = dur;
 	animating = true;
@@ -476,7 +542,10 @@ function finishPointerGesture(pointer, now) {
 	const isTap = !gesturePinched
 		&& pointer.moved < 8
 		&& (pointer.type === "mouse" || now - pointer.startTime < 300);
-	if (!isTap) return;
+	if (!isTap) {
+		if (!gesturePinched) startInertia(now);
+		return;
+	}
 
 	const rect = canvas.getBoundingClientRect();
 	const cx = pointer.x - rect.left;
@@ -517,9 +586,14 @@ canvas.addEventListener("pointerdown", (e) => {
 	vx = 0;
 	vy = 0;
 	animating = false;
+	if (pointers.size === 1) {
+		dragSamples.length = 0;
+		recordDragSample(e.clientX, e.clientY, now);
+	}
 
 	if (pointers.size === 2) {
 		gesturePinched = true;
+		dragSamples.length = 0;
 		const pinch = getPinchCenter();
 		if (pinch) {
 			pinchStartDist = pinch.dist;
@@ -544,8 +618,14 @@ canvas.addEventListener("pointermove", (e) => {
 		viewY += dy;
 		lastPointerX = e.clientX;
 		lastPointerY = e.clientY;
-		vx = dx * 2;
-		vy = dy * 2;
+
+		// Let the page follow the finger a little past its edges; the spring
+		// in animate() pulls it back on release.
+		const bounds = viewBounds();
+		viewX = Math.max(bounds.xMin - MAX_OVERSCROLL, Math.min(bounds.xMax + MAX_OVERSCROLL, viewX));
+		viewY = Math.max(bounds.yMin - MAX_OVERSCROLL, Math.min(bounds.yMax + MAX_OVERSCROLL, viewY));
+
+		recordDragSample(e.clientX, e.clientY, performance.now());
 		dirty = true;
 	} else if (pointers.size >= 2) {
 		gesturePinched = true;
@@ -583,12 +663,13 @@ canvas.addEventListener("pointerup", (e) => {
 	if (pointers.size === 0) {
 		finishPointerGesture(pointer, now);
 		gesturePinched = false;
-		clampView();
 		scheduleRender();
 	} else if (pointers.size === 1) {
 		const remaining = pointers.values().next().value;
 		lastPointerX = remaining.x;
 		lastPointerY = remaining.y;
+		dragSamples.length = 0;
+		recordDragSample(remaining.x, remaining.y, now);
 	}
 }, { passive: true });
 
@@ -599,7 +680,6 @@ canvas.addEventListener("pointercancel", (e) => {
 		gesturePinched = false;
 		vx = 0;
 		vy = 0;
-		clampView();
 		scheduleRender();
 	}
 }, { passive: true });
@@ -610,7 +690,6 @@ canvas.addEventListener("lostpointercapture", (e) => {
 		gesturePinched = false;
 		vx = 0;
 		vy = 0;
-		clampView();
 		scheduleRender();
 	}
 }, { passive: true });
