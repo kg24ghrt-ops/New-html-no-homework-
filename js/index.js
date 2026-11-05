@@ -56,6 +56,8 @@ let pages = [""];
 let currentPage = 0;
 let undoStack = [];
 let redoStack = [];
+let pendingUndo = null;
+let undoTimer = null;
 let template = "ruled";
 let showMargin = true;
 let showHoles = true;
@@ -610,41 +612,64 @@ window.addEventListener("keydown", (e) => {
 	}
 });
 
-function pushUndo() {
-	undoStack.push({ page: currentPage, text: pages[currentPage] });
-	redoStack = [];
+function snapshotState() {
+	return { pages: pages.slice(), currentPage };
+}
+
+function commitUndo(state) {
+	undoStack.push(state);
 	if (undoStack.length > 50) undoStack.shift();
 }
 
-function undo() {
-	if (undoStack.length === 0) return;
-	const state = undoStack.pop();
-	redoStack.push({ page: currentPage, text: pages[currentPage] });
-	currentPage = state.page;
-	pages[currentPage] = state.text;
-	textarea.value = state.text;
+function flushUndo() {
+	if (undoTimer) {
+		clearTimeout(undoTimer);
+		undoTimer = null;
+	}
+	if (pendingUndo) {
+		commitUndo(pendingUndo);
+		pendingUndo = null;
+	}
+}
+
+// Capture the state before the first keystroke of a typing burst. The burst
+// becomes one undo step after 400ms of quiet.
+function queueUndo() {
+	if (!pendingUndo) {
+		pendingUndo = snapshotState();
+		redoStack = [];
+	}
+	if (undoTimer) clearTimeout(undoTimer);
+	undoTimer = setTimeout(flushUndo, 400);
+}
+
+function restoreState(state) {
+	pages = state.pages.slice();
+	currentPage = Math.max(0, Math.min(pages.length - 1, state.currentPage));
+	textarea.value = pages[currentPage];
 	dirty = true;
 	scheduleRender();
 	updatePageUI();
 	saveState();
+}
+
+function undo() {
+	flushUndo();
+	if (undoStack.length === 0) return;
+	redoStack.push(snapshotState());
+	restoreState(undoStack.pop());
 }
 
 function redo() {
+	flushUndo();
 	if (redoStack.length === 0) return;
-	const state = redoStack.pop();
-	undoStack.push({ page: currentPage, text: pages[currentPage] });
-	currentPage = state.page;
-	pages[currentPage] = state.text;
-	textarea.value = state.text;
-	dirty = true;
-	scheduleRender();
-	updatePageUI();
-	saveState();
+	undoStack.push(snapshotState());
+	restoreState(redoStack.pop());
 }
 
 textarea.addEventListener("input", () => {
+	queueUndo();
 	pages[currentPage] = textarea.value;
-	pushUndo();
 	dirty = true;
 	scheduleRender();
 	checkPageFlow();
