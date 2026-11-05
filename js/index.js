@@ -385,28 +385,13 @@ function scheduleRender() {
 function clampView() {
 	const vs = { w: canvas.clientWidth, h: canvas.clientHeight };
 	const fit = fitRect(vs.w, vs.h);
-	const fitScale = fit.scale;
-	const paperW = PAPER_WIDTH * viewScale;
-	const paperH = PAPER_HEIGHT * viewScale;
+	viewScale = clampScale(viewScale, fit.scale);
 
-	viewScale = clampScale(viewScale, fitScale);
-
-	const maxX = vs.w - paperW;
-	const maxY = vs.h - paperH;
-
-	if (paperW < vs.w) {
-		viewX = vs.w / 2 - paperW / 2;
-	} else {
-		viewX = Math.max(maxX, Math.min(0, viewX));
-	}
-
-	if (paperH < vs.h) {
-		viewY = vs.h / 2 - paperH / 2;
-	} else {
-		const over = 20;
-		viewX = Math.max(maxX - over, Math.min(over, viewX));
-		viewY = Math.max(maxY - over, Math.min(over, viewY));
-	}
+	// Each axis centers on its own. A wide desktop window must not shift the
+	// paper sideways just because the paper is taller than the window.
+	const bounds = viewBounds();
+	viewX = Math.max(bounds.xMin, Math.min(bounds.xMax, viewX));
+	viewY = Math.max(bounds.yMin, Math.min(bounds.yMax, viewY));
 }
 
 function keyboardOpen() {
