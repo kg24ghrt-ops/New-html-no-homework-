@@ -409,15 +409,30 @@ function clampView() {
 	}
 }
 
+function keyboardOpen() {
+	const vv = window.visualViewport;
+	return !!vv && vv.height < window.innerHeight - 80;
+}
+
 function viewBounds() {
 	const vs = { w: canvas.clientWidth, h: canvas.clientHeight };
 	const paperW = PAPER_WIDTH * viewScale;
 	const paperH = PAPER_HEIGHT * viewScale;
+	let yMin = paperH < vs.h ? (vs.h - paperH) / 2 : vs.h - paperH;
+	let yMax = paperH < vs.h ? (vs.h - paperH) / 2 : 0;
+
+	// While the keyboard is open the page is allowed to sit wherever the caret
+	// needs it; do not spring back until the keyboard closes.
+	if (keyboardOpen() && document.activeElement === textarea) {
+		yMin = Math.min(yMin, viewY);
+		yMax = Math.max(yMax, viewY);
+	}
+
 	return {
 		xMin: paperW < vs.w ? (vs.w - paperW) / 2 : vs.w - paperW,
 		xMax: paperW < vs.w ? (vs.w - paperW) / 2 : 0,
-		yMin: paperH < vs.h ? (vs.h - paperH) / 2 : vs.h - paperH,
-		yMax: paperH < vs.h ? (vs.h - paperH) / 2 : 0,
+		yMin,
+		yMax,
 	};
 }
 
@@ -522,6 +537,45 @@ function focusCaretAt(cx, cy) {
 	}
 	textarea.setSelectionRange(index, index);
 	msg.textContent = "";
+	ensureCaretVisible();
+}
+
+// The visual viewport is the part of the page not covered by the soft
+// keyboard. Its height shrinks while the keyboard is open, while the layout
+// viewport (and our fixed canvas) usually stays the same.
+function visualViewportBounds() {
+	const vv = window.visualViewport;
+	if (!vv) return { top: 0, bottom: canvas.clientHeight };
+	return { top: vv.offsetTop, bottom: vv.offsetTop + vv.height };
+}
+
+function caretLineIndex() {
+	const text = textarea.value;
+	const index = Math.max(0, Math.min(text.length, textarea.selectionStart));
+	ctx.font = FONT_SIZE + "px monospace";
+	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
+	// Wrapping everything before the caret puts the caret on the last line.
+	return Math.max(0, wrapText(text.slice(0, index), maxWidth, ctx).length - 1);
+}
+
+// Pan (never zoom) so the caret sits above the keyboard. The page can move
+// past its normal bounds here; viewBounds() relaxes the Y axis while typing.
+function ensureCaretVisible() {
+	if (!ctx || document.activeElement !== textarea) return;
+
+	const { top, bottom } = visualViewportBounds();
+	const margin = 24;
+	const lineIndex = caretLineIndex();
+	const lineTop = viewY + (TOP_MARGIN + TEXT_PAD_TOP + lineIndex * LINE_GAP) * viewScale;
+	const lineBottom = lineTop + LINE_GAP * viewScale;
+
+	let dy = 0;
+	if (lineBottom > bottom - margin) dy = bottom - margin - lineBottom;
+	else if (lineTop < top + margin) dy = top + margin - lineTop;
+	if (Math.abs(dy) < 0.5) return;
+
+	viewY += dy;
+	scheduleRender();
 }
 
 function zoomAtTap(cx, cy) {
@@ -806,11 +860,28 @@ textarea.addEventListener("input", () => {
 	pendingKeystrokePerf = true;
 	scheduleRender();
 	checkPageFlow();
+	ensureCaretVisible();
 	saveState();
 });
 
-textarea.addEventListener("focus", () => { msg.textContent = ""; });
+textarea.addEventListener("focus", () => {
+	msg.textContent = "";
+	ensureCaretVisible();
+});
 textarea.addEventListener("blur", () => { msg.textContent = "Click to type"; });
+textarea.addEventListener("keyup", ensureCaretVisible);
+document.addEventListener("selectionchange", () => {
+	if (document.activeElement === textarea) ensureCaretVisible();
+});
+
+if (window.visualViewport) {
+	const onViewportChange = () => {
+		ensureCaretVisible();
+		scheduleRender();
+	};
+	window.visualViewport.addEventListener("resize", onViewportChange);
+	window.visualViewport.addEventListener("scroll", onViewportChange);
+}
 
 // Move overflowing text from the last page onto a new page.
 function checkPageFlow() {
@@ -1022,6 +1093,7 @@ const ro = new ResizeObserver(() => {
 	clampView();
 	dirty = true;
 	scheduleRender();
+	ensureCaretVisible();
 });
 ro.observe(canvas);
 
