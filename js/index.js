@@ -405,35 +405,42 @@ function focusCaretAt(cx, cy) {
 	msg.textContent = "";
 }
 
+function zoomAtTap(cx, cy) {
+	const fit = fitRect(canvas.clientWidth, canvas.clientHeight);
+	if (viewScale > fit.scale * 1.01) {
+		resetView();
+		return;
+	}
+
+	const paper = screenToPaper(cx, cy);
+	const targetScale = Math.min(fit.scale * 8, viewScale * 2.5);
+	startAnimTo(targetScale, cx - paper.x * targetScale, cy - paper.y * targetScale);
+}
+
 function finishPointerGesture(pointer, now) {
 	// A tap needs one pointer, little movement and a short press. Mouse
 	// clicks are not time-limited; touch presses are.
 	const isTap = !gesturePinched
 		&& pointer.moved < 8
 		&& (pointer.type === "mouse" || now - pointer.startTime < 300);
+	if (!isTap) return;
+
+	const rect = canvas.getBoundingClientRect();
+	const cx = pointer.x - rect.left;
+	const cy = pointer.y - rect.top;
 
 	const dx = Math.abs(pointer.x - lastTapX);
 	const dy = Math.abs(pointer.y - lastTapY);
-	const doubleTap = lastTapTime > 0 && dx < 8 && dy < 8 && now - lastTapTime < 250;
-
-	if (doubleTap) {
+	if (lastTapTime > 0 && dx < 20 && dy < 20 && now - lastTapTime < 300) {
 		lastTapTime = 0;
-		const fit = fitRect(canvas.clientWidth, canvas.clientHeight);
-		if (viewScale <= fit.scale * 1.01) {
-			startAnimTo(viewScale * 2.5, viewX, viewY);
-		} else {
-			resetView();
-		}
+		zoomAtTap(cx, cy);
 		return;
 	}
 
 	lastTapTime = now;
 	lastTapX = pointer.x;
 	lastTapY = pointer.y;
-	if (isTap) {
-		const rect = canvas.getBoundingClientRect();
-		focusCaretAt(pointer.x - rect.left, pointer.y - rect.top);
-	}
+	focusCaretAt(cx, cy);
 }
 
 canvas.addEventListener("pointerdown", (e) => {
