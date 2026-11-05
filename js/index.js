@@ -50,6 +50,7 @@ let pinchStartDist = 0;
 let lastTapTime = 0;
 let lastTapX = 0;
 let lastTapY = 0;
+let gesturePinched = false;
 
 let pages = [""];
 let currentPage = 0;
@@ -352,11 +353,104 @@ function resetView() {
 	startAnimTo(r.scale, r.left, r.top);
 }
 
+// Map a tap inside the paper to a text offset. Visual wrapped lines are walked
+// forward through the source so wrapped lines and hard newlines both land on
+// the right character.
+function caretIndexFromPoint(cx, cy) {
+	const paper = screenToPaper(cx, cy);
+	if (paper.x < 0 || paper.x > PAPER_WIDTH || paper.y < 0 || paper.y > PAPER_HEIGHT) return null;
+
+	ctx.font = FONT_SIZE + "px monospace";
+	const text = textarea.value;
+	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
+	const wrapped = wrapText(text, maxWidth, ctx);
+	const lineIndex = Math.max(0, Math.min(wrapped.length - 1, Math.floor((paper.y - TOP_MARGIN) / LINE_GAP)));
+	const line = wrapped[lineIndex] || "";
+
+	let column = 0;
+	let width = 0;
+	const target = paper.x - (LEFT_MARGIN + TEXT_INSET);
+	for (const ch of line) {
+		const w = ctx.measureText(ch).width;
+		if (target < width + w / 2) break;
+		width += w;
+		column += ch.length;
+	}
+
+	let offset = 0;
+	for (let i = 0; i < lineIndex; i++) {
+		const visual = wrapped[i];
+		if (visual === "") {
+			offset += 1;
+			continue;
+		}
+		const at = text.indexOf(visual, offset);
+		if (at < 0) break;
+		offset = at + visual.length;
+		if (text[offset] === " " || text[offset] === "\n") offset += 1;
+	}
+
+	return Math.min(offset + column, text.length);
+}
+
+function focusCaretAt(cx, cy) {
+	const index = caretIndexFromPoint(cx, cy);
+	if (index === null) return;
+	try {
+		textarea.focus({ preventScroll: true });
+	} catch {
+		textarea.focus();
+	}
+	textarea.setSelectionRange(index, index);
+	msg.textContent = "";
+}
+
+function finishPointerGesture(pointer, now) {
+	// A tap needs one pointer, little movement and a short press. Mouse
+	// clicks are not time-limited; touch presses are.
+	const isTap = !gesturePinched
+		&& pointer.moved < 8
+		&& (pointer.type === "mouse" || now - pointer.startTime < 300);
+
+	const dx = Math.abs(pointer.x - lastTapX);
+	const dy = Math.abs(pointer.y - lastTapY);
+	const doubleTap = lastTapTime > 0 && dx < 8 && dy < 8 && now - lastTapTime < 250;
+
+	if (doubleTap) {
+		lastTapTime = 0;
+		const fit = fitRect(canvas.clientWidth, canvas.clientHeight);
+		if (viewScale <= fit.scale * 1.01) {
+			startAnimTo(viewScale * 2.5, viewX, viewY);
+		} else {
+			resetView();
+		}
+		return;
+	}
+
+	lastTapTime = now;
+	lastTapX = pointer.x;
+	lastTapY = pointer.y;
+	if (isTap) {
+		const rect = canvas.getBoundingClientRect();
+		focusCaretAt(pointer.x - rect.left, pointer.y - rect.top);
+	}
+}
+
 canvas.addEventListener("pointerdown", (e) => {
 	if (e.target === resetBtn) return;
 	if (e.button !== 0 && e.button !== 1) return;
 
-	pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+	const now = performance.now();
+	if (pointers.size === 0) gesturePinched = false;
+	pointers.set(e.pointerId, {
+		x: e.clientX,
+		y: e.clientY,
+		startX: e.clientX,
+		startY: e.clientY,
+		startTime: now,
+		moved: 0,
+		type: e.pointerType,
+	});
 	lastPointerX = e.clientX;
 	lastPointerY = e.clientY;
 	canvas.setPointerCapture(e.pointerId);
@@ -365,6 +459,7 @@ canvas.addEventListener("pointerdown", (e) => {
 	animating = false;
 
 	if (pointers.size === 2) {
+		gesturePinched = true;
 		const pinch = getPinchCenter();
 		if (pinch) {
 			pinchStartDist = pinch.dist;
@@ -375,7 +470,12 @@ canvas.addEventListener("pointerdown", (e) => {
 }, { passive: false });
 
 canvas.addEventListener("pointermove", (e) => {
-	pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+	const pointer = pointers.get(e.pointerId);
+	if (!pointer) return;
+
+	pointer.x = e.clientX;
+	pointer.y = e.clientY;
+	pointer.moved = Math.max(pointer.moved, Math.hypot(e.clientX - pointer.startX, e.clientY - pointer.startY));
 
 	if (pointers.size === 1) {
 		const dx = e.clientX - lastPointerX;
@@ -388,6 +488,7 @@ canvas.addEventListener("pointermove", (e) => {
 		vy = dy * 2;
 		dirty = true;
 	} else if (pointers.size >= 2) {
+		gesturePinched = true;
 		const pinch = getPinchCenter();
 		if (pinch && pinchStartDist > 0) {
 			const rect = canvas.getBoundingClientRect();
@@ -412,29 +513,16 @@ canvas.addEventListener("pointermove", (e) => {
 }, { passive: true });
 
 canvas.addEventListener("pointerup", (e) => {
+	const pointer = pointers.get(e.pointerId);
+	if (!pointer) return;
+
 	pointers.delete(e.pointerId);
-	canvas.releasePointerCapture(e.pointerId);
+	if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
 
+	const now = performance.now();
 	if (pointers.size === 0) {
-		const now = performance.now();
-		const dx = Math.abs(e.clientX - lastTapX);
-		const dy = Math.abs(e.clientY - lastTapY);
-		const dt = now - lastTapTime;
-
-		if (dx < 8 && dy < 8 && dt < 250 && lastTapTime > 0) {
-			lastTapTime = 0;
-			const fit = fitRect(canvas.clientWidth, canvas.clientHeight);
-			if (viewScale <= fit.scale * 1.01) {
-				startAnimTo(viewScale * 2.5, viewX, viewY);
-			} else {
-				resetView();
-			}
-		} else {
-			lastTapTime = now;
-			lastTapX = e.clientX;
-			lastTapY = e.clientY;
-		}
-
+		finishPointerGesture(pointer, now);
+		gesturePinched = false;
 		clampView();
 		scheduleRender();
 	} else if (pointers.size === 1) {
@@ -446,8 +534,9 @@ canvas.addEventListener("pointerup", (e) => {
 
 canvas.addEventListener("pointercancel", (e) => {
 	pointers.delete(e.pointerId);
-	canvas.releasePointerCapture(e.pointerId);
+	if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
 	if (pointers.size === 0) {
+		gesturePinched = false;
 		vx = 0;
 		vy = 0;
 		clampView();
@@ -458,6 +547,7 @@ canvas.addEventListener("pointercancel", (e) => {
 canvas.addEventListener("lostpointercapture", (e) => {
 	pointers.delete(e.pointerId);
 	if (pointers.size === 0) {
+		gesturePinched = false;
 		vx = 0;
 		vy = 0;
 		clampView();
@@ -492,42 +582,6 @@ canvas.addEventListener("wheel", (e) => {
 	dirty = true;
 	scheduleRender();
 }, { passive: false });
-
-canvas.addEventListener("pointerdown", (e) => {
-	if (e.pointerType === "touch" && pointers.size === 1) {
-		const t = performance.now();
-		if (t - lastTapTime > 250) {
-			lastTapTime = t;
-			lastTapX = e.clientX;
-			lastTapY = e.clientY;
-		}
-	}
-}, { passive: true });
-
-canvas.addEventListener("pointerup", (e) => {
-	if (e.pointerType === "touch") {
-		const now = performance.now();
-		if (now - lastTapTime < 250 && Math.abs(e.clientX - lastTapX) < 8 && Math.abs(e.clientY - lastTapY) < 8) {
-			const rect = canvas.getBoundingClientRect();
-			const cx = e.clientX - rect.left;
-			const cy = e.clientY - rect.top;
-			const paper = screenToPaper(cx, cy);
-			if (paper.x >= 0 && paper.x <= PAPER_WIDTH && paper.y >= 0 && paper.y <= PAPER_HEIGHT) {
-				textarea.focus();
-				const line = Math.floor((paper.y - TOP_MARGIN) / LINE_GAP);
-				const col = Math.floor((paper.x - (LEFT_MARGIN + TEXT_INSET)) / (FONT_SIZE * 0.6));
-				const text = pages[currentPage];
-				const lines = text.split("\n");
-				let charIndex = 0;
-				for (let i = 0; i < Math.min(line, lines.length); i++) {
-					charIndex += lines[i].length + 1;
-				}
-				charIndex = Math.min(charIndex + Math.min(col, lines[line]?.length || 0), text.length);
-				textarea.setSelectionRange(charIndex, charIndex);
-			}
-		}
-	}
-}, { passive: true });
 
 resetBtn.addEventListener("click", resetView);
 resetBtn.addEventListener("keydown", (e) => {
