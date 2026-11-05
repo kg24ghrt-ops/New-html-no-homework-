@@ -5,7 +5,9 @@ type in a transparent overlay, pan and zoom with touch or mouse.
 
 ## Run
 
-Open `index.html` in a modern browser. No build step required.
+Open `index.html` in a modern browser. If your browser blocks ES modules on
+`file://`, serve the folder instead (`python3 -m http.server`). No build step
+required.
 
 ## Test
 
@@ -13,9 +15,9 @@ Open `index.html` in a modern browser. No build step required.
 npm test
 ```
 
-Uses Jest. Tests cover paper constants, `paperRect` aspect/fit/mobile behavior,
-text alignment (canvas x equals textarea x, baseline sits above the rule),
-and text inset vs margin line.
+Uses Jest. Tests cover paper constants, text wrapping and page splitting,
+`paperRect` aspect/fit/mobile behavior, text alignment (canvas x equals
+textarea x, baseline sits above the rule), and text inset vs margin line.
 
 ## Controls
 
@@ -27,4 +29,5 @@ and text inset vs margin line.
 - Ctrl+Z / Ctrl+Shift+Z: undo / redo
 - Prev/Next buttons: navigate pages
 - Template buttons: switch ruled / grid / dotted, toggle margin line and holes
-- Export button: download current page as PNG
+- Export button: download the full current page as PNG
+- Writing is saved automatically in this browser

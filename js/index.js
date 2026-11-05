@@ -16,6 +16,8 @@ import {
 	FONT_SIZE,
 	MM,
 } from "./paper.js";
+import { drawInkText } from "./ink.js";
+import { splitPage, wrapText } from "./text.js";
 
 const canvas = document.getElementById("canvas");
 const msg = document.getElementById("msg");
@@ -57,6 +59,8 @@ let template = "ruled";
 let showMargin = true;
 let showHoles = true;
 
+const STORAGE_KEY = "b5-notebook-v1";
+
 let ctx;
 let bgCanvas, bgCtx;
 let dpr = 1;
@@ -64,7 +68,55 @@ let dirty = true;
 let rafId = null;
 
 const isMobile = window.matchMedia("(pointer: coarse)").matches;
-const dprCap = isMobile ? Math.min(window.devicePixelRatio || 1, 1.5) : (window.devicePixelRatio || 1);
+
+// Measure the same monospace font the textarea uses. The textarea has to place
+// its first baseline exactly where the canvas draws line 0.
+const measureCanvas = document.createElement("canvas");
+const measureCtx = measureCanvas.getContext("2d");
+
+function textPadTop() {
+	measureCtx.font = FONT_SIZE + "px monospace";
+	const metrics = measureCtx.measureText("Mg");
+	const ascent = metrics.fontBoundingBoxAscent ?? FONT_SIZE * 0.8;
+	const descent = metrics.fontBoundingBoxDescent ?? FONT_SIZE * 0.2;
+	const halfLeading = (LINE_GAP - ascent - descent) / 2;
+	const firstBaseline = LINE_GAP - 1.5 * MM;
+	return Math.max(0, firstBaseline - halfLeading - ascent);
+}
+
+const TEXT_PAD_TOP = textPadTop();
+
+function saveState() {
+	try {
+		localStorage.setItem(STORAGE_KEY, JSON.stringify({
+			pages,
+			currentPage,
+			template,
+			showMargin,
+			showHoles,
+		}));
+	} catch {
+		// Storage can be unavailable (private mode / file://). Typing still works.
+	}
+}
+
+function loadState() {
+	try {
+		const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+		if (!saved) return;
+		if (Array.isArray(saved.pages) && saved.pages.every((p) => typeof p === "string")) {
+			pages = saved.pages.length ? saved.pages : [""];
+			currentPage = Math.max(0, Math.min(saved.pages.length - 1, Number(saved.currentPage) || 0));
+		}
+		if (["ruled", "grid", "dotted"].includes(saved.template)) template = saved.template;
+		if (typeof saved.showMargin === "boolean") showMargin = saved.showMargin;
+		if (typeof saved.showHoles === "boolean") showHoles = saved.showHoles;
+	} catch {
+		// Ignore a corrupt save rather than blocking startup.
+	}
+}
+
+loadState();
 
 function easeOutCubic(t) {
 	return 1 - Math.pow(1 - t, 3);
@@ -92,56 +144,6 @@ function getPinchCenter() {
 		cx: (pts[0].x + pts[1].x) / 2,
 		cy: (pts[0].y + pts[1].y) / 2,
 	};
-}
-
-function fitWord(word, maxWidth, result) {
-	if (ctx.measureText(word).width <= maxWidth) {
-		result.push(word);
-		return;
-	}
-	let chunk = "";
-	for (const ch of word) {
-		const t2 = chunk + ch;
-		if (ctx.measureText(t2).width <= maxWidth) {
-			chunk = t2;
-		} else {
-			if (chunk) result.push(chunk);
-			chunk = ch;
-		}
-	}
-	if (chunk) result.push(chunk);
-}
-
-function wrapLine(line, maxWidth, result) {
-	const words = line.split(" ");
-	let current = "";
-	for (const word of words) {
-		const test = current ? current + " " + word : word;
-		if (ctx.measureText(test).width <= maxWidth) {
-			current = test;
-		} else {
-			if (current) result.push(current);
-			current = word;
-			if (ctx.measureText(word).width > maxWidth) {
-				fitWord(word, maxWidth, result);
-				current = "";
-			}
-		}
-	}
-	if (current) result.push(current);
-}
-
-function wrapText(text, maxWidth) {
-	const lines = text.split("\n");
-	const result = [];
-	for (const line of lines) {
-		if (line === "") {
-			result.push("");
-			continue;
-		}
-		wrapLine(line, maxWidth, result);
-	}
-	return result;
 }
 
 function drawRuledLines(c) {
@@ -218,17 +220,12 @@ function drawBackground(c) {
 }
 
 function drawText(c, text) {
-	c.fillStyle = "#2d2d2d";
 	c.font = FONT_SIZE + "px monospace";
 	c.textBaseline = "alphabetic";
 	const textX = LEFT_MARGIN + TEXT_INSET;
 	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - textX;
-	const wrapped = wrapText(text, maxWidth);
-	const baselineOffset = -1.5 * MM;
-	wrapped.forEach((line, i) => {
-		const y = TOP_MARGIN + (i + 1) * LINE_GAP + baselineOffset;
-		c.fillText(line, textX, y);
-	});
+	const wrapped = wrapText(text, maxWidth, c);
+	drawInkText(c, wrapped);
 	return wrapped.length;
 }
 
@@ -238,6 +235,10 @@ function render() {
 	ctx.save();
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, canvas.width, canvas.height);
+	// Work in CSS pixels; dpr only controls how many device pixels back the
+	// canvas. Without this the paper and the textarea drift apart on hi-dpi
+	// screens.
+	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 	ctx.translate(viewX, viewY);
 	ctx.scale(viewScale, viewScale);
 
@@ -257,7 +258,7 @@ function render() {
 	textarea.style.fontSize = (FONT_SIZE * scale) + "px";
 	textarea.style.lineHeight = (LINE_GAP * scale) + "px";
 
-	const padTop = (TOP_MARGIN + LINE_GAP - 1.5 * MM - FONT_SIZE * 0.8) * scale;
+	const padTop = TEXT_PAD_TOP * scale;
 	textarea.style.paddingTop = Math.max(0, padTop) + "px";
 
 	dirty = false;
@@ -564,6 +565,7 @@ function undo() {
 	dirty = true;
 	scheduleRender();
 	updatePageUI();
+	saveState();
 }
 
 function redo() {
@@ -576,6 +578,7 @@ function redo() {
 	dirty = true;
 	scheduleRender();
 	updatePageUI();
+	saveState();
 }
 
 textarea.addEventListener("input", () => {
@@ -584,28 +587,34 @@ textarea.addEventListener("input", () => {
 	dirty = true;
 	scheduleRender();
 	checkPageFlow();
+	saveState();
 });
 
 textarea.addEventListener("focus", () => { msg.textContent = ""; });
 textarea.addEventListener("blur", () => { msg.textContent = "Click to type"; });
 
+// Move overflowing text from the last page onto a new page.
 function checkPageFlow() {
+	if (currentPage !== pages.length - 1) return;
+
+	ctx.font = FONT_SIZE + "px monospace";
 	const maxLines = Math.floor((PAPER_HEIGHT - TOP_MARGIN - BOTTOM_MARGIN) / LINE_GAP);
 	const textX = LEFT_MARGIN + TEXT_INSET;
 	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - textX;
-	const wrapped = wrapText(textarea.value, maxWidth);
-	if (wrapped.length > maxLines && currentPage === pages.length - 1) {
-		const allLines = textarea.value.split("\n");
-		const overflowLines = allLines.slice(maxLines);
-		const keepLines = allLines.slice(0, maxLines);
-		pages[currentPage] = keepLines.join("\n");
-		textarea.value = pages[currentPage];
-		pages.push(overflowLines.join("\n"));
-		currentPage = pages.length - 1;
-		updatePageUI();
-		dirty = true;
-		scheduleRender();
-	}
+	const split = splitPage(textarea.value, maxWidth, maxLines, ctx);
+	if (!split) return;
+
+	pages[currentPage] = split.head;
+	pages.push(split.tail);
+	currentPage = pages.length - 1;
+
+	const caret = Math.max(0, Math.min(split.tail.length, textarea.selectionStart - split.cut));
+	textarea.value = split.tail;
+	textarea.setSelectionRange(caret, caret);
+
+	updatePageUI();
+	dirty = true;
+	scheduleRender();
 }
 
 const pageNav = document.createElement("div");
@@ -636,6 +645,7 @@ btnPrev.addEventListener("click", () => {
 		dirty = true;
 		scheduleRender();
 		updatePageUI();
+		saveState();
 	}
 });
 btnNext.addEventListener("click", () => {
@@ -645,6 +655,7 @@ btnNext.addEventListener("click", () => {
 		dirty = true;
 		scheduleRender();
 		updatePageUI();
+		saveState();
 	}
 });
 
@@ -663,6 +674,7 @@ templateToggle.id = "templateToggle";
 		createBackgroundCache();
 		dirty = true;
 		scheduleRender();
+		saveState();
 	});
 	templateToggle.appendChild(b);
 });
@@ -677,6 +689,7 @@ marginBtn.addEventListener("click", () => {
 	createBackgroundCache();
 	dirty = true;
 	scheduleRender();
+	saveState();
 });
 templateToggle.appendChild(marginBtn);
 
@@ -690,6 +703,7 @@ holesBtn.addEventListener("click", () => {
 	createBackgroundCache();
 	dirty = true;
 	scheduleRender();
+	saveState();
 });
 templateToggle.appendChild(holesBtn);
 document.body.appendChild(templateToggle);
@@ -709,14 +723,45 @@ document.body.appendChild(redoBtn);
 
 const exportBtn = document.createElement("button");
 exportBtn.id = "exportBtn";
-exportBtn.title = "Export PNG";
+exportBtn.title = "Export current page as PNG";
 exportBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
-exportBtn.addEventListener("click", () => {
-	const link = document.createElement("a");
-	link.download = `page-${currentPage + 1}.png`;
-	link.href = canvas.toDataURL();
-	link.click();
-});
+
+function downloadCanvas(source, filename) {
+	const save = (url, revoke) => {
+		const link = document.createElement("a");
+		link.download = filename;
+		link.href = url;
+		link.rel = "noopener";
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		if (revoke) setTimeout(() => URL.revokeObjectURL(url), 10000);
+	};
+
+	if (source.toBlob) {
+		source.toBlob((blob) => {
+			if (blob) save(URL.createObjectURL(blob), true);
+			else save(source.toDataURL("image/png"));
+		}, "image/png");
+	} else {
+		save(source.toDataURL("image/png"));
+	}
+}
+
+function exportPage() {
+	const out = document.createElement("canvas");
+	out.width = PAPER_WIDTH;
+	out.height = PAPER_HEIGHT;
+	const outCtx = out.getContext("2d");
+	drawBackground(outCtx);
+	drawText(outCtx, pages[currentPage]);
+
+	const filename = `page-${currentPage + 1}.png`;
+	downloadCanvas(out, filename);
+	msg.textContent = `Saved ${filename}`;
+}
+
+exportBtn.addEventListener("click", exportPage);
 document.body.appendChild(exportBtn);
 
 function createBackgroundCache() {
@@ -735,6 +780,7 @@ const ro = new ResizeObserver(() => {
 	const dp = isMobile ? Math.min(window.devicePixelRatio || 1, 1.5) : (window.devicePixelRatio || 1);
 	canvas.width = Math.floor(vs.w * dp);
 	canvas.height = Math.floor(vs.h * dp);
+	dpr = vs.w > 0 ? canvas.width / vs.w : 1;
 	createBackgroundCache();
 	const fit = fitRect(vs.w, vs.h);
 	if (viewScale <= fit.scale * 1.001) {
@@ -754,8 +800,10 @@ function init() {
 	const dp = isMobile ? Math.min(window.devicePixelRatio || 1, 1.5) : (window.devicePixelRatio || 1);
 	canvas.width = Math.floor(vs.w * dp);
 	canvas.height = Math.floor(vs.h * dp);
+	dpr = vs.w > 0 ? canvas.width / vs.w : 1;
 	createBackgroundCache();
 	resetView();
+	textarea.value = pages[currentPage];
 	render();
 	updatePageUI();
 	msg.textContent = "Click to type. Pan: drag. Zoom: wheel / pinch. Reset: button or R";
