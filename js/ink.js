@@ -369,7 +369,11 @@ export function getInkPage(wrapped, quality = 1, options = {}) {
 	ctx.clearRect(0, 0, page.canvas.width, page.canvas.height);
 
 	const lines = wrapped.map((line) => (typeof line === "string" ? { text: line, start: 0 } : line));
+	// Padded rows overlap a little; multiply keeps genuinely overlapping ink
+	// darker instead of letting the later row's transparent padding win.
+	ctx.globalCompositeOperation = "multiply";
 	drawLineSet(ctx, lines, quality, fontMode, pageId);
+	ctx.globalCompositeOperation = "source-over";
 
 	// Optional ghost of the previous page, mirrored and very faint. It is a
 	// separate layer so it can never affect the live text or the caret.
