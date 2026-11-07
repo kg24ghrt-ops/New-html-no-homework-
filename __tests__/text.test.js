@@ -1,4 +1,4 @@
-import { layoutTextLines, splitPage, wrapText } from "../js/text.js";
+import { layoutTextLines, scriptRuns, splitPage, wrapText } from "../js/text.js";
 
 // Every character is 10 units wide, so the expected wraps are easy to read.
 const measure = { measureText: (s) => ({ width: s.length * 10 }) };
@@ -34,6 +34,26 @@ describe("text wrapping", () => {
 			{ text: "", start: 2 },
 			{ text: "b", start: 3 },
 		]);
+	});
+});
+
+describe("script runs", () => {
+	test("splits a mixed English/Burmese line into runs", () => {
+		const runs = scriptRuns("Hello မြန်မာ world");
+		expect(runs.map((run) => [run.script, run.text])).toEqual([
+			["latin", "Hello "],
+			["myanmar", "မြန်မာ"],
+			["latin", " world"],
+		]);
+		expect(runs[1].start).toBe(6);
+	});
+
+	test("keeps a pure Burmese line in one Myanmar run", () => {
+		const line = "ကျွန်တော်ပြည်ထောင်စု";
+		const runs = scriptRuns(line);
+		expect(runs).toHaveLength(1);
+		expect(runs[0].script).toBe("myanmar");
+		expect(runs[0].text).toBe(line);
 	});
 });
 

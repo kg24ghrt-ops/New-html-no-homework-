@@ -1,4 +1,5 @@
 import { fontSpec } from "./fonts.js";
+import { graphemeOffsets, scriptRuns } from "./text.js";
 import {
 	FONT_SIZE,
 	LEFT_MARGIN,
@@ -19,7 +20,6 @@ const LINE_BASELINE = LINE_GAP + BASELINE_OFFSET;
 const GRAIN_SIZE = 512;
 const BLOTCH_SIZE = 24;
 const MAX_LINE_CACHE = 300;
-const ASCII = /^[\x20-\x7E]*$/;
 
 const lineCache = new Map();
 const inkPages = new Map();
@@ -115,29 +115,35 @@ function drawBleed(g, line, baseline, seed) {
 	g.restore();
 }
 
-// Exact same x advance and baseline as the original fillText layout, but each
-// glyph gets its own ink load, a sub-pixel wobble and sometimes a darker
-// pooled spot. Positions do not move enough to affect the caret.
-function drawCharacters(g, line, baseline, seed) {
+// Exact same x advance and baseline as a plain fillText of the whole line, but
+// split into script runs. Myanmar is always one fillText per run so the
+// browser shaper can stack and reorder marks; Latin is drawn per grapheme
+// cluster using cumulative prefix widths for its advance.
+export function drawCharacters(g, line, baseline, seed) {
 	const rand = makeRandom(seed ^ 0x51ed270b);
 	const textX = LEFT_MARGIN + TEXT_INSET;
 	const y = baseline + (rand() - 0.5) * 0.8;
+	if (line === "") return;
 
-	if (!ASCII.test(line)) {
-		// Leave complex scripts to the browser's shaper; only vary density.
-		const shade = 0.88 + rand() * 0.16;
-		g.globalAlpha = 0.88 + rand() * 0.12;
-		g.fillStyle = inkColor(shade);
-		g.fillText(line, textX, y);
-		return;
-	}
+	for (const run of scriptRuns(line)) {
+		const runX = textX + g.measureText(line.slice(0, run.start)).width;
 
-	let x = textX;
-	for (let charIndex = 0; charIndex < line.length; charIndex++) {
-		const ch = line[charIndex];
-		const width = g.measureText(ch).width;
-		if (ch !== " ") {
-			const shade = (1 - 0.08 * (charIndex / Math.max(1, line.length))) * (0.86 + rand() * 0.16);
+		if (run.script === "myanmar") {
+			// One call for the whole run: stacked consonants, medials and
+			// reordered vowels stay intact.
+			const shade = 0.88 + rand() * 0.16;
+			g.globalAlpha = 0.88 + rand() * 0.12;
+			g.fillStyle = inkColor(shade);
+			g.fillText(run.text, runX, y);
+			continue;
+		}
+
+		for (const cluster of graphemeOffsets(run.text)) {
+			const ch = cluster.segment;
+			if (ch.trim() === "") continue;
+			const prefix = line.slice(0, run.start + cluster.offset);
+			const x = textX + g.measureText(prefix).width;
+			const shade = 0.86 + rand() * 0.16;
 			const alpha = 0.82 + rand() * 0.18;
 			const dx = (rand() - 0.5) * 0.6;
 			const dy = (rand() - 0.5) * 0.9;
@@ -153,7 +159,6 @@ function drawCharacters(g, line, baseline, seed) {
 				g.fillText(ch, x + dx, y + dy);
 			}
 		}
-		x += width;
 	}
 }
 

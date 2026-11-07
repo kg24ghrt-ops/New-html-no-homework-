@@ -14,6 +14,25 @@ export function graphemes(text) {
 	return Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
 }
 
+const MYANMAR_CHAR = /[\p{Script=Myanmar}]/u;
+
+// Split a visual line into script runs. Everything that is not Myanmar
+// (Latin, digits, punctuation, spaces) is one "other" run. The returned
+// offsets are UTF-16 offsets into the line.
+export function scriptRuns(line) {
+	const runs = [];
+	let current = null;
+	for (const cluster of graphemeOffsets(line)) {
+		const script = MYANMAR_CHAR.test(cluster.segment) ? "myanmar" : "latin";
+		if (!current || current.script !== script) {
+			current = { script, text: "", start: cluster.offset };
+			runs.push(current);
+		}
+		current.text += cluster.segment;
+	}
+	return runs;
+}
+
 // Grapheme clusters with their UTF-16 offsets in the original string. Caret
 // placement and source-stable ink seeds both need the offset, not just the
 // visible cluster.
