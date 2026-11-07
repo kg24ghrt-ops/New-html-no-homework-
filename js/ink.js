@@ -1,3 +1,4 @@
+import { fontSpec } from "./fonts.js";
 import {
 	FONT_SIZE,
 	LEFT_MARGIN,
@@ -23,6 +24,10 @@ const ASCII = /^[\x20-\x7E]*$/;
 const lineCache = new Map();
 const inkPages = new Map();
 let grainTile = null;
+
+export function clearInkLineCache() {
+	lineCache.clear();
+}
 
 function inkColor(shade = 1, rgb = INK) {
 	return `rgb(${Math.round(rgb[0] * shade)}, ${Math.round(rgb[1] * shade)}, ${Math.round(rgb[2] * shade)})`;
@@ -152,9 +157,9 @@ function drawCharacters(g, line, baseline, seed) {
 	}
 }
 
-function getLineCanvas(text, quality) {
+function getLineCanvas(text, quality, fontMode) {
 	if (text === "") return null;
-	const key = quality + "\u0000" + text;
+	const key = quality + "\u0000" + fontMode + "\u0000" + text;
 	const cached = lineCache.get(key);
 	if (cached) return cached;
 
@@ -163,7 +168,7 @@ function getLineCanvas(text, quality) {
 	canvas.height = Math.max(1, Math.round(LINE_GAP * quality));
 	const g = canvas.getContext("2d");
 	g.scale(quality, quality);
-	g.font = FONT_SIZE + "px monospace";
+	g.font = fontSpec(fontMode, FONT_SIZE);
 	g.textBaseline = "alphabetic";
 	g.imageSmoothingEnabled = true;
 
@@ -200,7 +205,7 @@ function getPage(quality) {
 
 // Returns a transparent page-sized ink layer. Only rows whose line text
 // changed are rasterized again; unchanged lines are reused from lineCache.
-export function getInkPage(wrapped, quality = 1) {
+export function getInkPage(wrapped, quality = 1, fontMode = "monospace") {
 	const page = getPage(quality);
 	const ctx = page.ctx;
 	ctx.globalCompositeOperation = "source-over";
@@ -215,7 +220,7 @@ export function getInkPage(wrapped, quality = 1) {
 		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP) * quality);
 		ctx.clearRect(0, rowY, page.canvas.width, lineH);
 		if (text) {
-			const lineCanvas = getLineCanvas(text, quality);
+			const lineCanvas = getLineCanvas(text, quality, fontMode);
 			if (lineCanvas) ctx.drawImage(lineCanvas, 0, rowY);
 		}
 		page.keys[i] = text;

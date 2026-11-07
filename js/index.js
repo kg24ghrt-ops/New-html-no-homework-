@@ -16,7 +16,8 @@ import {
 	FONT_SIZE,
 	MM,
 } from "./paper.js";
-import { getInkPage, releaseInkPage } from "./ink.js";
+import { FONT_MODES, fontSpec, fontStack, loadInkFonts } from "./fonts.js";
+import { clearInkLineCache, getInkPage, releaseInkPage } from "./ink.js";
 import { splitPage, wrapText } from "./text.js";
 
 const canvas = document.getElementById("canvas");
@@ -67,6 +68,7 @@ let undoTimer = null;
 let template = "ruled";
 let showMargin = true;
 let showHoles = true;
+let fontMode = "handwriting";
 
 const STORAGE_KEY = "b5-notebook-v1";
 
@@ -90,8 +92,8 @@ const SCREEN_QUALITY = isMobile ? 0.75 : 1;
 const measureCanvas = document.createElement("canvas");
 const measureCtx = measureCanvas.getContext("2d");
 
-function textPadTop() {
-	measureCtx.font = FONT_SIZE + "px monospace";
+function textPadTop(mode = fontMode) {
+	measureCtx.font = fontSpec(mode, FONT_SIZE);
 	const metrics = measureCtx.measureText("Mg");
 	const ascent = metrics.fontBoundingBoxAscent ?? FONT_SIZE * 0.8;
 	const descent = metrics.fontBoundingBoxDescent ?? FONT_SIZE * 0.2;
@@ -100,7 +102,7 @@ function textPadTop() {
 	return Math.max(0, firstBaseline - halfLeading - ascent);
 }
 
-const TEXT_PAD_TOP = textPadTop();
+let TEXT_PAD_TOP = 0;
 
 function saveState() {
 	try {
@@ -110,6 +112,7 @@ function saveState() {
 			template,
 			showMargin,
 			showHoles,
+			fontMode,
 		}));
 	} catch {
 		// Storage can be unavailable (private mode / file://). Typing still works.
@@ -127,12 +130,16 @@ function loadState() {
 		if (["ruled", "grid", "dotted"].includes(saved.template)) template = saved.template;
 		if (typeof saved.showMargin === "boolean") showMargin = saved.showMargin;
 		if (typeof saved.showHoles === "boolean") showHoles = saved.showHoles;
+		if (FONT_MODES.includes(saved.fontMode)) fontMode = saved.fontMode;
 	} catch {
 		// Ignore a corrupt save rather than blocking startup.
 	}
 }
 
 loadState();
+
+document.documentElement.style.setProperty("--ink-font-stack", fontStack(fontMode));
+textarea.style.fontFamily = fontStack(fontMode);
 
 function easeOutCubic(t) {
 	return 1 - Math.pow(1 - t, 3);
@@ -236,7 +243,7 @@ function drawBackground(c) {
 }
 
 function wrappedPage(text, measure) {
-	measure.font = FONT_SIZE + "px monospace";
+	measure.font = fontSpec(fontMode, FONT_SIZE);
 	measure.textBaseline = "alphabetic";
 	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
 	return wrapText(text, maxWidth, measure);
@@ -254,7 +261,7 @@ function rebuildPageCache() {
 	}
 
 	const wrapped = wrappedPage(pages[currentPage], ctx);
-	const ink = getInkPage(wrapped, INK_QUALITY);
+	const ink = getInkPage(wrapped, INK_QUALITY, fontMode);
 
 	pageCtx.setTransform(1, 0, 0, 1, 0, 0);
 	pageCtx.globalCompositeOperation = "source-over";
@@ -377,7 +384,7 @@ function animate(now) {
 
 function scheduleRender() {
 	dirty = true;
-	if (!rafId) {
+	if (!rafId && !animating) {
 		rafId = requestAnimationFrame(animate);
 	}
 }
@@ -385,13 +392,28 @@ function scheduleRender() {
 function clampView() {
 	const vs = { w: canvas.clientWidth, h: canvas.clientHeight };
 	const fit = fitRect(vs.w, vs.h);
-	viewScale = clampScale(viewScale, fit.scale);
+	const fitScale = fit.scale;
+	const paperW = PAPER_WIDTH * viewScale;
+	const paperH = PAPER_HEIGHT * viewScale;
 
-	// Each axis centers on its own. A wide desktop window must not shift the
-	// paper sideways just because the paper is taller than the window.
-	const bounds = viewBounds();
-	viewX = Math.max(bounds.xMin, Math.min(bounds.xMax, viewX));
-	viewY = Math.max(bounds.yMin, Math.min(bounds.yMax, viewY));
+	viewScale = clampScale(viewScale, fitScale);
+
+	const maxX = vs.w - paperW;
+	const maxY = vs.h - paperH;
+
+	if (paperW < vs.w) {
+		viewX = vs.w / 2 - paperW / 2;
+	} else {
+		viewX = Math.max(maxX, Math.min(0, viewX));
+	}
+
+	if (paperH < vs.h) {
+		viewY = vs.h / 2 - paperH / 2;
+	} else {
+		const over = 20;
+		viewX = Math.max(maxX - over, Math.min(over, viewX));
+		viewY = Math.max(maxY - over, Math.min(over, viewY));
+	}
 }
 
 function keyboardOpen() {
@@ -479,7 +501,7 @@ function caretIndexFromPoint(cx, cy) {
 	const paper = screenToPaper(cx, cy);
 	if (paper.x < 0 || paper.x > PAPER_WIDTH || paper.y < 0 || paper.y > PAPER_HEIGHT) return null;
 
-	ctx.font = FONT_SIZE + "px monospace";
+	ctx.font = fontSpec(fontMode, FONT_SIZE);
 	const text = textarea.value;
 	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
 	const wrapped = wrapText(text, maxWidth, ctx);
@@ -537,7 +559,7 @@ function visualViewportBounds() {
 function caretLineIndex() {
 	const text = textarea.value;
 	const index = Math.max(0, Math.min(text.length, textarea.selectionStart));
-	ctx.font = FONT_SIZE + "px monospace";
+	ctx.font = fontSpec(fontMode, FONT_SIZE);
 	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
 	// Wrapping everything before the caret puts the caret on the last line.
 	return Math.max(0, wrapText(text.slice(0, index), maxWidth, ctx).length - 1);
@@ -868,53 +890,24 @@ if (window.visualViewport) {
 	window.visualViewport.addEventListener("scroll", onViewportChange);
 }
 
-// Move overflow forward from the page being edited through every following
-// page. Editing page 2 of 5 pushes its overflow into page 3 instead of only
-// working on the last page.
+// Move overflowing text from the last page onto a new page.
 function checkPageFlow() {
-	ctx.font = FONT_SIZE + "px monospace";
+	if (currentPage !== pages.length - 1) return;
+
+	ctx.font = fontSpec(fontMode, FONT_SIZE);
 	const maxLines = Math.floor((PAPER_HEIGHT - TOP_MARGIN - BOTTOM_MARGIN) / LINE_GAP);
 	const textX = LEFT_MARGIN + TEXT_INSET;
 	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - textX;
+	const split = splitPage(textarea.value, maxWidth, maxLines, ctx);
+	if (!split) return;
 
-	let caret = textarea.selectionStart;
-	let caretPage = currentPage;
-	let page = currentPage;
-	let carry = null;
-	let splitAny = false;
+	pages[currentPage] = split.head;
+	pages.push(split.tail);
+	currentPage = pages.length - 1;
 
-	while (page < pages.length) {
-		let text = pages[page];
-		if (carry !== null) {
-			text = carry + text;
-			pages[page] = text;
-			carry = null;
-		}
-
-		const split = splitPage(text, maxWidth, maxLines, ctx);
-		if (!split) break;
-
-		splitAny = true;
-		pages[page] = split.head;
-		if (caretPage === page && caret >= split.cut) {
-			caretPage = page + 1;
-			caret -= split.cut;
-		}
-		carry = split.tail;
-		page++;
-	}
-
-	if (carry !== null) {
-		pages.push(carry);
-		splitAny = true;
-	}
-
-	if (!splitAny) return;
-
-	currentPage = Math.min(caretPage, pages.length - 1);
-	textarea.value = pages[currentPage];
-	const pos = Math.max(0, Math.min(caret, textarea.value.length));
-	textarea.setSelectionRange(pos, pos);
+	const caret = Math.max(0, Math.min(split.tail.length, textarea.selectionStart - split.cut));
+	textarea.value = split.tail;
+	textarea.setSelectionRange(caret, caret);
 
 	updatePageUI();
 	dirty = true;
@@ -1013,7 +1006,16 @@ holesBtn.addEventListener("click", () => {
 	saveState();
 });
 templateToggle.appendChild(holesBtn);
+
+const fontBtn = document.createElement("button");
+fontBtn.className = "templateBtn" + (fontMode === "handwriting" ? " active" : "");
+fontBtn.textContent = "F";
+fontBtn.addEventListener("click", () => {
+	applyFontMode(fontMode === "handwriting" ? "monospace" : "handwriting");
+});
+templateToggle.appendChild(fontBtn);
 document.body.appendChild(templateToggle);
+updateFontButton();
 
 const undoBtn = document.createElement("button");
 undoBtn.id = "undoBtn";
@@ -1065,7 +1067,7 @@ function exportPage() {
 	// Export always uses the full-resolution ink layer, even on phones where
 	// the on-screen layer is half size.
 	const wrapped = wrappedPage(pages[currentPage], outCtx);
-	const ink = getInkPage(wrapped, 1);
+	const ink = getInkPage(wrapped, 1, fontMode);
 	outCtx.globalCompositeOperation = "multiply";
 	outCtx.drawImage(ink, 0, 0);
 	outCtx.globalCompositeOperation = "source-over";
@@ -1078,6 +1080,28 @@ function exportPage() {
 
 exportBtn.addEventListener("click", exportPage);
 document.body.appendChild(exportBtn);
+
+function updateFontButton() {
+	fontBtn.classList.toggle("active", fontMode === "handwriting");
+	fontBtn.title = `Font: ${fontMode === "handwriting" ? "Handwriting" : "Monospace"}`;
+}
+
+function applyFontMode(mode) {
+	fontMode = mode;
+	document.documentElement.style.setProperty("--ink-font-stack", fontStack(fontMode));
+	textarea.style.fontFamily = fontStack(fontMode);
+	TEXT_PAD_TOP = textPadTop(fontMode);
+	// The glyphs and the line breaks both change with the font, so drop every
+	// cached raster and re-wrap/re-render from scratch.
+	clearInkLineCache();
+	releaseInkPage(INK_QUALITY);
+	releaseInkPage(1);
+	dirty = true;
+	pageDirty = true;
+	updateFontButton();
+	scheduleRender();
+	saveState();
+}
 
 function createBackgroundCache() {
 	if (!bgCanvas) {
@@ -1107,11 +1131,10 @@ const ro = new ResizeObserver(() => {
 	clampView();
 	dirty = true;
 	scheduleRender();
-	ensureCaretVisible();
 });
 ro.observe(canvas);
 
-function init() {
+async function init() {
 	ctx = canvas.getContext("2d");
 	const vs = { w: canvas.clientWidth, h: canvas.clientHeight };
 	const dp = isMobile ? Math.min(window.devicePixelRatio || 1, 1.5) : (window.devicePixelRatio || 1);
@@ -1119,6 +1142,15 @@ function init() {
 	canvas.height = Math.floor(vs.h * dp);
 	dpr = vs.w > 0 ? canvas.width / vs.w : 1;
 	createBackgroundCache();
+
+	// Baseline placement depends on the real font metrics, and the canvas ink
+	// must not be rasterized with the fallback face. Resolve both faces first.
+	await loadInkFonts(FONT_SIZE);
+	TEXT_PAD_TOP = textPadTop(fontMode);
+	clearInkLineCache();
+	releaseInkPage(INK_QUALITY);
+	releaseInkPage(1);
+
 	resetView();
 	textarea.value = pages[currentPage];
 	render();

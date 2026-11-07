@@ -9,6 +9,19 @@ Open `index.html` in a modern browser. If your browser blocks ES modules on
 `file://`, serve the folder instead (`python3 -m http.server`). No build step
 required.
 
+## Fonts
+
+Both font files are bundled locally in `fonts/` (no CDN, works offline):
+
+- `Caveat-Regular.woff2` - Latin handwriting, SIL Open Font License 1.1
+  (`fonts/OFL-Caveat.txt`)
+- `NotoSansMyanmar-Regular.woff2` - Myanmar script, SIL Open Font License 1.1
+  (`fonts/OFL-NotoSansMyanmar.txt`)
+
+The Handwriting mode uses `Caveat` first and falls back to `Noto Sans Myanmar`
+for Burmese. The Monospace mode is a safe fallback if a device shapes Myanmar
+badly.
+
 ## Test
 
 ```
