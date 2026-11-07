@@ -13,19 +13,33 @@ import { graphemeOffsets, graphemes } from "../js/text.js";
 
 function mockCtx() {
 	const calls = [];
+	const stack = [];
+	let tx = 0;
+	let ty = 0;
 	return {
 		calls,
 		globalAlpha: 1,
 		fillStyle: "",
-		save() {},
-		restore() {},
-		translate() {},
+		save() {
+			stack.push({ tx, ty, alpha: this.globalAlpha, style: this.fillStyle });
+		},
+		restore() {
+			const state = stack.pop();
+			tx = state.tx;
+			ty = state.ty;
+			this.globalAlpha = state.alpha;
+			this.fillStyle = state.style;
+		},
+		translate(x, y) {
+			tx += x;
+			ty += y;
+		},
 		rotate() {},
 		transform() {},
 		scale() {},
 		measureText: (text) => ({ width: text.length * 10 }),
 		fillText(text, x, y) {
-			calls.push({ text, x, y, alpha: this.globalAlpha, style: this.fillStyle });
+			calls.push({ text, x: x + tx, y: y + ty, alpha: this.globalAlpha, style: this.fillStyle });
 		},
 	};
 }
@@ -86,6 +100,23 @@ describe("ink text layout", () => {
 		const prefix = g.measureText(line.slice(0, last.offset)).width;
 		const advance = g.measureText(last.segment).width;
 		expect(prefix + advance).toBe(plain);
+	});
+
+	test("Latin glyphs keep the cumulative advance within the visual caps", () => {
+		const g = mockCtx();
+		const line = "abc";
+		const textX = paper.LEFT_MARGIN + paper.TEXT_INSET;
+		drawCharacters(g, line, 100, { pageId: "p1", start: 0 });
+
+		const clusters = graphemeOffsets(line);
+		expect(g.calls).toHaveLength(clusters.length);
+		for (let i = 0; i < clusters.length; i++) {
+			const expected = g.measureText(line.slice(0, clusters[i].offset)).width;
+			const actual = g.calls[i].x - textX;
+			expect(Math.abs(actual - expected)).toBeLessThanOrEqual(
+				INK_LIMITS.wordDx + INK_LIMITS.glyphDx + 1e-9,
+			);
+		}
 	});
 
 	test("line canvases are padded above and below the 7mm row", () => {
