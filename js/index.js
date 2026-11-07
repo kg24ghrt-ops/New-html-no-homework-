@@ -68,6 +68,7 @@ let lastTapY = 0;
 let gesturePinched = false;
 
 let pages = [""];
+let pageIds = [];
 let currentPage = 0;
 let undoStack = [];
 let redoStack = [];
@@ -112,10 +113,27 @@ function textPadTop(mode = fontMode) {
 
 let TEXT_PAD_TOP = 0;
 
+function makePageId() {
+	if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+	return `page-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function ensurePageIds() {
+	while (pageIds.length < pages.length) pageIds.push(makePageId());
+	if (pageIds.length > pages.length) pageIds.length = pages.length;
+}
+
+function currentPageId() {
+	if (!pageIds[currentPage]) pageIds[currentPage] = makePageId();
+	return pageIds[currentPage];
+}
+
 function saveState() {
+	ensurePageIds();
 	try {
 		localStorage.setItem(STORAGE_KEY, JSON.stringify({
 			pages,
+			pageIds,
 			currentPage,
 			template,
 			showMargin,
@@ -134,6 +152,9 @@ function loadState() {
 		if (Array.isArray(saved.pages) && saved.pages.every((p) => typeof p === "string")) {
 			pages = saved.pages.length ? saved.pages : [""];
 			currentPage = Math.max(0, Math.min(saved.pages.length - 1, Number(saved.currentPage) || 0));
+			const savedIds = Array.isArray(saved.pageIds) ? saved.pageIds : [];
+			pageIds = pages.map((_, i) =>
+				(typeof savedIds[i] === "string" && savedIds[i]) ? savedIds[i] : makePageId());
 		}
 		if (["ruled", "grid", "dotted"].includes(saved.template)) template = saved.template;
 		if (typeof saved.showMargin === "boolean") showMargin = saved.showMargin;
@@ -145,6 +166,7 @@ function loadState() {
 }
 
 loadState();
+ensurePageIds();
 
 document.documentElement.style.setProperty("--ink-font-stack", fontStack(fontMode));
 textarea.style.fontFamily = fontStack(fontMode);
@@ -370,7 +392,7 @@ function rebuildPageCache() {
 	}
 
 	const wrapped = wrappedPage(pages[currentPage], ctx);
-	const ink = getInkPage(wrapped, INK_QUALITY, fontMode);
+	const ink = getInkPage(wrapped, INK_QUALITY, { fontMode, pageId: currentPageId() });
 
 	pageCtx.setTransform(1, 0, 0, 1, 0, 0);
 	pageCtx.globalCompositeOperation = "source-over";
@@ -903,7 +925,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 function snapshotState() {
-	return { pages: pages.slice(), currentPage };
+	return { pages: pages.slice(), pageIds: pageIds.slice(), currentPage };
 }
 
 function commitUndo(state) {
@@ -935,6 +957,8 @@ function queueUndo() {
 
 function restoreState(state) {
 	pages = state.pages.slice();
+	pageIds = Array.isArray(state.pageIds) ? state.pageIds.slice() : [];
+	ensurePageIds();
 	currentPage = Math.max(0, Math.min(pages.length - 1, state.currentPage));
 	textarea.value = pages[currentPage];
 	dirty = true;
@@ -1002,6 +1026,8 @@ function checkPageFlow() {
 
 	pages[currentPage] = split.head;
 	pages.push(split.tail);
+	pageIds.length = Math.max(pageIds.length, currentPage + 1);
+	pageIds.push(makePageId());
 	currentPage = pages.length - 1;
 
 	const caret = Math.max(0, Math.min(split.tail.length, textarea.selectionStart - split.cut));
@@ -1166,7 +1192,7 @@ function exportPage() {
 	// Export always uses the full-resolution ink layer, even on phones where
 	// the on-screen layer is half size.
 	const wrapped = wrappedPage(pages[currentPage], outCtx);
-	const ink = getInkPage(wrapped, 1, fontMode);
+	const ink = getInkPage(wrapped, 1, { fontMode, pageId: currentPageId() });
 	outCtx.globalCompositeOperation = "multiply";
 	outCtx.drawImage(ink, 0, 0);
 	outCtx.globalCompositeOperation = "source-over";

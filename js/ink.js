@@ -45,13 +45,21 @@ function makeRandom(seed) {
 	};
 }
 
-function hashLine(text) {
+// Stable seed for one glyph, run or word. It deliberately depends on the
+// page, the absolute source offset and the character - never on the whole
+// line. Typing at the end of a line therefore cannot restyle earlier ink.
+export function hashSeed(pageId, offset, text) {
 	let h = 2166136261;
-	for (let i = 0; i < text.length; i++) {
-		h ^= text.charCodeAt(i);
+	const source = `${pageId}\u0000${offset}\u0000${text}`;
+	for (let i = 0; i < source.length; i++) {
+		h ^= source.charCodeAt(i);
 		h = Math.imul(h, 16777619);
 	}
 	return h >>> 0;
+}
+
+function wordSeed(pageId, wordStart) {
+	return hashSeed(pageId, wordStart, "\u0000word");
 }
 
 // Tileable paper-fibre grain plus soft density blotches. Drawn with
@@ -119,42 +127,57 @@ function drawBleed(g, line, baseline, seed) {
 // split into script runs. Myanmar is always one fillText per run so the
 // browser shaper can stack and reorder marks; Latin is drawn per grapheme
 // cluster using cumulative prefix widths for its advance.
-export function drawCharacters(g, line, baseline, seed) {
-	const rand = makeRandom(seed ^ 0x51ed270b);
+export function drawCharacters(g, line, baseline, options = {}) {
+	const pageId = options.pageId ?? "page";
+	const start = options.start ?? 0;
+	const lineRand = makeRandom(hashSeed(pageId, start, "\u0000line"));
 	const textX = LEFT_MARGIN + TEXT_INSET;
-	const y = baseline + (rand() - 0.5) * 0.8;
+	const y = baseline + (lineRand() - 0.5) * 0.8;
 	if (line === "") return;
 
 	for (const run of scriptRuns(line)) {
 		const runX = textX + g.measureText(line.slice(0, run.start)).width;
+		const runStart = start + run.start;
 
 		if (run.script === "myanmar") {
 			// One call for the whole run: stacked consonants, medials and
-			// reordered vowels stay intact.
-			const shade = 0.88 + rand() * 0.16;
-			g.globalAlpha = 0.88 + rand() * 0.12;
+			// reordered vowels stay intact. Only run-level ink varies.
+			const runRand = makeRandom(hashSeed(pageId, runStart, run.text));
+			const shade = 0.88 + runRand() * 0.16;
+			g.globalAlpha = 0.88 + runRand() * 0.12;
 			g.fillStyle = inkColor(shade);
 			g.fillText(run.text, runX, y);
 			continue;
 		}
 
+		let wordStart = 0;
 		for (const cluster of graphemeOffsets(run.text)) {
 			const ch = cluster.segment;
-			if (ch.trim() === "") continue;
+			if (ch.trim() === "") {
+				wordStart = cluster.offset + ch.length;
+				continue;
+			}
+
+			const absolute = runStart + cluster.offset;
+			const glyphRand = makeRandom(hashSeed(pageId, absolute, ch));
+			// Per-word shade, not charIndex/line.length: appending a character
+			// never changes the shade of earlier words.
+			const shadeRand = makeRandom(wordSeed(pageId, runStart + wordStart));
+			const shade = (0.88 + shadeRand() * 0.12) * (0.94 + glyphRand() * 0.1);
+			const alpha = 0.82 + glyphRand() * 0.18;
+			const dx = (glyphRand() - 0.5) * 0.6;
+			const dy = (glyphRand() - 0.5) * 0.9;
+
 			const prefix = line.slice(0, run.start + cluster.offset);
 			const x = textX + g.measureText(prefix).width;
-			const shade = 0.86 + rand() * 0.16;
-			const alpha = 0.82 + rand() * 0.18;
-			const dx = (rand() - 0.5) * 0.6;
-			const dy = (rand() - 0.5) * 0.9;
 
 			g.globalAlpha = alpha;
 			g.fillStyle = inkColor(shade);
 			g.fillText(ch, x + dx, y + dy);
 
 			// A few glyphs carry a darker blob where the pen slowed down.
-			if (rand() > 0.9) {
-				g.globalAlpha = 0.35 + rand() * 0.25;
+			if (glyphRand() > 0.9) {
+				g.globalAlpha = 0.35 + glyphRand() * 0.25;
 				g.fillStyle = inkColor(0.65, INK_DARK);
 				g.fillText(ch, x + dx, y + dy);
 			}
@@ -162,9 +185,12 @@ export function drawCharacters(g, line, baseline, seed) {
 	}
 }
 
-function getLineCanvas(text, quality, fontMode) {
+function getLineCanvas(text, quality, options = {}) {
 	if (text === "") return null;
-	const key = quality + "\u0000" + fontMode + "\u0000" + text;
+	const fontMode = options.fontMode ?? "monospace";
+	const pageId = options.pageId ?? "page";
+	const start = options.start ?? 0;
+	const key = [quality, fontMode, pageId, start, text].join("\u0000");
 	const cached = lineCache.get(key);
 	if (cached) return cached;
 
@@ -177,9 +203,9 @@ function getLineCanvas(text, quality, fontMode) {
 	g.textBaseline = "alphabetic";
 	g.imageSmoothingEnabled = true;
 
-	const seed = hashLine(text);
+	const seed = hashSeed(pageId, start, "\u0000bleed");
 	drawBleed(g, text, LINE_BASELINE, seed);
-	drawCharacters(g, text, LINE_BASELINE, seed);
+	drawCharacters(g, text, LINE_BASELINE, { pageId, start });
 
 	ensureGrain();
 	const pattern = g.createPattern(grainTile, "repeat");
@@ -208,9 +234,13 @@ function getPage(quality) {
 	return page;
 }
 
-// Returns a transparent page-sized ink layer. Only rows whose line text
-// changed are rasterized again; unchanged lines are reused from lineCache.
-export function getInkPage(wrapped, quality = 1, fontMode = "monospace") {
+// Returns a transparent page-sized ink layer. Only rows whose line text,
+// source offset or page identity changed are rasterized again; unchanged lines
+// are reused from lineCache.
+export function getInkPage(wrapped, quality = 1, options = {}) {
+	const opts = typeof options === "string" ? { fontMode: options } : options;
+	const fontMode = opts.fontMode ?? "monospace";
+	const pageId = opts.pageId ?? "page";
 	const page = getPage(quality);
 	const ctx = page.ctx;
 	ctx.globalCompositeOperation = "source-over";
@@ -220,16 +250,21 @@ export function getInkPage(wrapped, quality = 1, fontMode = "monospace") {
 	const lineH = Math.max(1, Math.round(LINE_GAP * quality));
 	const max = Math.max(page.keys.length, lines.length);
 	for (let i = 0; i < max; i++) {
-		const text = i < lines.length ? lines[i].text : null;
-		if (page.keys[i] === text) continue;
+		const line = i < lines.length ? lines[i] : null;
+		const key = line ? [line.text, line.start, pageId].join("\u0000") : null;
+		if (page.keys[i] === key) continue;
 
 		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP) * quality);
 		ctx.clearRect(0, rowY, page.canvas.width, lineH);
-		if (text) {
-			const lineCanvas = getLineCanvas(text, quality, fontMode);
+		if (line && line.text) {
+			const lineCanvas = getLineCanvas(line.text, quality, {
+				fontMode,
+				pageId,
+				start: line.start,
+			});
 			if (lineCanvas) ctx.drawImage(lineCanvas, 0, rowY);
 		}
-		page.keys[i] = text;
+		page.keys[i] = key;
 	}
 	page.keys.length = lines.length;
 	return page.canvas;
