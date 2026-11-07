@@ -114,9 +114,16 @@ function textPadTop(mode = fontMode) {
 
 let TEXT_PAD_TOP = 0;
 
+let pageIdCounter = 0;
+
 function makePageId() {
 	if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
-	return `page-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+	if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+		const bytes = crypto.getRandomValues(new Uint8Array(8));
+		return `page-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+	}
+	pageIdCounter++;
+	return `page-${Date.now().toString(36)}-${pageIdCounter.toString(36)}`;
 }
 
 function ensurePageIds() {
@@ -297,6 +304,27 @@ function updateTextOverlayStyles() {
 	mirror.style.fontFamily = textarea.style.fontFamily;
 }
 
+function visualRow(rect, state, lineHeight) {
+	if (!rect || (!rect.width && !rect.height)) return state.index;
+	if (state.firstTop === null) state.firstTop = rect.top;
+	return Math.max(state.index, Math.round((rect.top - state.firstTop) / lineHeight));
+}
+
+function paragraphGroups(paragraph, node, range, lineHeight) {
+	const groups = [];
+	const state = { firstTop: null, index: 0 };
+	for (const cluster of graphemeOffsets(paragraph)) {
+		range.setStart(node, cluster.offset);
+		range.setEnd(node, cluster.offset + cluster.segment.length);
+		const rects = range.getClientRects();
+		const rect = rects.length ? rects[0] : range.getBoundingClientRect();
+		state.index = visualRow(rect, state, lineHeight);
+		if (!groups[state.index]) groups[state.index] = { parts: [], start: cluster.offset };
+		groups[state.index].parts.push(cluster.segment);
+	}
+	return groups;
+}
+
 // Read the browser's real line breaks. One text node per hard line keeps the
 // shaper intact; a Range over each grapheme tells us which visual row it landed
 // on. No spans, no per-character text nodes.
@@ -305,42 +333,19 @@ function mirrorLines(text) {
 	const lineHeight = parseFloat(mirror.style.lineHeight)
 		|| parseFloat(getComputedStyle(mirror).lineHeight)
 		|| LINE_GAP;
-	const paragraphs = text.split("\n");
 	const lines = [];
 	const range = document.createRange();
 	let paragraphStart = 0;
 
-	for (const paragraph of paragraphs) {
+	for (const paragraph of text.split("\n")) {
 		if (paragraph === "") {
 			lines.push({ text: "", start: paragraphStart });
 			paragraphStart += 1;
 			continue;
 		}
 		mirror.textContent = paragraph;
-		const node = mirror.firstChild;
-		const groups = [];
-		let firstTop = null;
-		let lastIndex = 0;
-
-		for (const cluster of graphemeOffsets(paragraph)) {
-			range.setStart(node, cluster.offset);
-			range.setEnd(node, cluster.offset + cluster.segment.length);
-			const rects = range.getClientRects();
-			const rect = rects.length ? rects[0] : range.getBoundingClientRect();
-			let index = lastIndex;
-			if (rect && (rect.width || rect.height)) {
-				if (firstTop === null) firstTop = rect.top;
-				index = Math.max(lastIndex, Math.round((rect.top - firstTop) / lineHeight));
-			}
-			lastIndex = index;
-			if (!groups[index]) {
-				groups[index] = { parts: [], start: paragraphStart + cluster.offset };
-			}
-			groups[index].parts.push(cluster.segment);
-		}
-
-		for (const group of groups) {
-			if (group) lines.push({ text: group.parts.join(""), start: group.start });
+		for (const group of paragraphGroups(paragraph, mirror.firstChild, range, lineHeight)) {
+			if (group) lines.push({ text: group.parts.join(""), start: paragraphStart + group.start });
 		}
 		paragraphStart += paragraph.length + 1;
 	}

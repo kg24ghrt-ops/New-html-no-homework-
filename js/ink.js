@@ -337,6 +337,23 @@ function getPage(quality) {
 	return page;
 }
 
+function drawLineSet(ctx, lines, quality, fontMode, pageId, mirrorWidth = 0) {
+	const rowX = Math.round((LEFT_MARGIN + TEXT_INSET - LINE_SIDE_PAD) * quality);
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (!line.text) continue;
+		const lineCanvas = getLineCanvas(line.text, quality, {
+			fontMode,
+			pageId,
+			start: line.start,
+		});
+		if (!lineCanvas) continue;
+		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP - LINE_PAD) * quality);
+		const x = mirrorWidth ? mirrorWidth - rowX - lineCanvas.width : rowX;
+		ctx.drawImage(lineCanvas, x, rowY);
+	}
+}
+
 // Returns a transparent page-sized ink layer. The page itself is composited
 // again on every change (cheap drawImage calls), while each line raster is
 // reused from lineCache until its text, source offset or font changes.
@@ -352,19 +369,7 @@ export function getInkPage(wrapped, quality = 1, options = {}) {
 	ctx.clearRect(0, 0, page.canvas.width, page.canvas.height);
 
 	const lines = wrapped.map((line) => (typeof line === "string" ? { text: line, start: 0 } : line));
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
-		if (!line.text) continue;
-		const lineCanvas = getLineCanvas(line.text, quality, {
-			fontMode,
-			pageId,
-			start: line.start,
-		});
-		if (!lineCanvas) continue;
-		const rowX = Math.round((LEFT_MARGIN + TEXT_INSET - LINE_SIDE_PAD) * quality);
-		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP - LINE_PAD) * quality);
-		ctx.drawImage(lineCanvas, rowX, rowY);
-	}
+	drawLineSet(ctx, lines, quality, fontMode, pageId);
 
 	// Optional ghost of the previous page, mirrored and very faint. It is a
 	// separate layer so it can never affect the live text or the caret.
@@ -374,19 +379,7 @@ export function getInkPage(wrapped, quality = 1, options = {}) {
 		ctx.globalAlpha = 0.04;
 		ctx.translate(page.canvas.width, 0);
 		ctx.scale(-1, 1);
-		for (let i = 0; i < opts.previousLines.length; i++) {
-			const line = opts.previousLines[i];
-			if (!line.text) continue;
-			const lineCanvas = getLineCanvas(line.text, quality, {
-				fontMode,
-				pageId: previousId,
-				start: line.start,
-			});
-			if (!lineCanvas) continue;
-			const rowX = Math.round((LEFT_MARGIN + TEXT_INSET - LINE_SIDE_PAD) * quality);
-			const rowY = Math.round((TOP_MARGIN + i * LINE_GAP - LINE_PAD) * quality);
-			ctx.drawImage(lineCanvas, page.canvas.width - rowX - lineCanvas.width, rowY);
-		}
+		drawLineSet(ctx, opts.previousLines, quality, fontMode, previousId, page.canvas.width);
 		ctx.restore();
 	}
 	ctx.globalCompositeOperation = "source-over";

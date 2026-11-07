@@ -14,7 +14,7 @@ export function graphemes(text) {
 	return Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
 }
 
-const MYANMAR_CHAR = /[\p{Script=Myanmar}]/u;
+const MYANMAR_CHAR = /\p{Script=Myanmar}/u;
 
 // Split a visual line into script runs. Everything that is not Myanmar
 // (Latin, digits, punctuation, spaces) is one "other" run. The returned
