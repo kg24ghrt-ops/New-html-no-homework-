@@ -1,4 +1,4 @@
-import { splitPage, wrapText } from "../js/text.js";
+import { layoutTextLines, splitPage, wrapText } from "../js/text.js";
 
 // Every character is 10 units wide, so the expected wraps are easy to read.
 const measure = { measureText: (s) => ({ width: s.length * 10 }) };
@@ -19,6 +19,21 @@ describe("text wrapping", () => {
 	test("does not split a combining mark from its base character", () => {
 		// "a" + combining acute, twice. Each visible cluster is two code units.
 		expect(wrapText("a\u0301b\u0301", 10, measure)).toEqual(["a\u0301", "b\u0301"]);
+	});
+
+	test("visual lines keep their absolute source offsets", () => {
+		const lines = layoutTextLines("one two three", 60, measure);
+		expect(lines.map((line) => line.text)).toEqual(["one", "two", "three"]);
+		expect(lines.map((line) => line.start)).toEqual([0, 4, 8]);
+	});
+
+	test("blank lines still advance the source offset", () => {
+		const lines = layoutTextLines("a\n\nb", 100, measure);
+		expect(lines).toEqual([
+			{ text: "a", start: 0 },
+			{ text: "", start: 2 },
+			{ text: "b", start: 3 },
+		]);
 	});
 });
 

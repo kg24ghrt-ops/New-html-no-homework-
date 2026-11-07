@@ -211,10 +211,11 @@ export function getInkPage(wrapped, quality = 1, fontMode = "monospace") {
 	ctx.globalCompositeOperation = "source-over";
 	ctx.globalAlpha = 1;
 
+	const lines = wrapped.map((line) => (typeof line === "string" ? { text: line, start: 0 } : line));
 	const lineH = Math.max(1, Math.round(LINE_GAP * quality));
-	const max = Math.max(page.keys.length, wrapped.length);
+	const max = Math.max(page.keys.length, lines.length);
 	for (let i = 0; i < max; i++) {
-		const text = i < wrapped.length ? wrapped[i] : null;
+		const text = i < lines.length ? lines[i].text : null;
 		if (page.keys[i] === text) continue;
 
 		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP) * quality);
@@ -225,7 +226,7 @@ export function getInkPage(wrapped, quality = 1, fontMode = "monospace") {
 		}
 		page.keys[i] = text;
 	}
-	page.keys.length = wrapped.length;
+	page.keys.length = lines.length;
 	return page.canvas;
 }
 

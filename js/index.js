@@ -18,7 +18,7 @@ import {
 } from "./paper.js";
 import { FONT_MODES, fontSpec, fontStack, loadInkFonts } from "./fonts.js";
 import { clearInkLineCache, getInkPage, releaseInkPage } from "./ink.js";
-import { splitPage, wrapText } from "./text.js";
+import { graphemeOffsets, layoutTextLines, splitPage } from "./text.js";
 
 const canvas = document.getElementById("canvas");
 const msg = document.getElementById("msg");
@@ -30,6 +30,14 @@ textarea.autocomplete = "off";
 textarea.spellcheck = false;
 textarea.setAttribute("autocorrect", "off");
 document.body.appendChild(textarea);
+
+// Invisible copy of the textarea. It has the same font, size, width and wrap
+// CSS, so the browser's own line breaker (including Myanmar syllable breaks)
+// tells us exactly where each visual line starts and ends.
+const mirror = document.createElement("div");
+mirror.id = "inkMirror";
+mirror.setAttribute("aria-hidden", "true");
+document.body.appendChild(mirror);
 
 let viewScale = 1;
 let viewX = 0;
@@ -140,6 +148,7 @@ loadState();
 
 document.documentElement.style.setProperty("--ink-font-stack", fontStack(fontMode));
 textarea.style.fontFamily = fontStack(fontMode);
+mirror.style.fontFamily = fontStack(fontMode);
 
 function easeOutCubic(t) {
 	return 1 - Math.pow(1 - t, 3);
@@ -242,11 +251,111 @@ function drawBackground(c) {
 	}
 }
 
-function wrappedPage(text, measure) {
+function updateTextOverlayStyles() {
+	const scale = viewScale;
+	const textX = LEFT_MARGIN + TEXT_INSET;
+	const textWidth = PAPER_WIDTH - RIGHT_MARGIN - textX;
+
+	textarea.style.left = (viewX + textX * scale) + "px";
+	textarea.style.top = (viewY + TOP_MARGIN * scale) + "px";
+	textarea.style.width = (textWidth * scale) + "px";
+	textarea.style.height = ((PAPER_HEIGHT - TOP_MARGIN - BOTTOM_MARGIN) * scale) + "px";
+	textarea.style.fontSize = (FONT_SIZE * scale) + "px";
+	textarea.style.lineHeight = (LINE_GAP * scale) + "px";
+	textarea.style.paddingTop = Math.max(0, TEXT_PAD_TOP * scale) + "px";
+	textarea.style.fontFamily = fontStack(fontMode);
+
+	mirror.style.width = textarea.style.width;
+	mirror.style.fontSize = textarea.style.fontSize;
+	mirror.style.lineHeight = textarea.style.lineHeight;
+	mirror.style.paddingTop = textarea.style.paddingTop;
+	mirror.style.fontFamily = textarea.style.fontFamily;
+}
+
+// Read the browser's real line breaks. One text node per hard line keeps the
+// shaper intact; a Range over each grapheme tells us which visual row it landed
+// on. No spans, no per-character text nodes.
+function mirrorLines(text) {
+	if (text === "") return [{ text: "", start: 0 }];
+	const lineHeight = parseFloat(mirror.style.lineHeight)
+		|| parseFloat(getComputedStyle(mirror).lineHeight)
+		|| LINE_GAP;
+	const paragraphs = text.split("\n");
+	const lines = [];
+	const range = document.createRange();
+	let paragraphStart = 0;
+
+	for (const paragraph of paragraphs) {
+		if (paragraph === "") {
+			lines.push({ text: "", start: paragraphStart });
+			paragraphStart += 1;
+			continue;
+		}
+		mirror.textContent = paragraph;
+		const node = mirror.firstChild;
+		const groups = [];
+		let firstTop = null;
+		let lastIndex = 0;
+
+		for (const cluster of graphemeOffsets(paragraph)) {
+			range.setStart(node, cluster.offset);
+			range.setEnd(node, cluster.offset + cluster.segment.length);
+			const rects = range.getClientRects();
+			const rect = rects.length ? rects[0] : range.getBoundingClientRect();
+			let index = lastIndex;
+			if (rect && (rect.width || rect.height)) {
+				if (firstTop === null) firstTop = rect.top;
+				index = Math.max(lastIndex, Math.round((rect.top - firstTop) / lineHeight));
+			}
+			lastIndex = index;
+			if (!groups[index]) {
+				groups[index] = { parts: [], start: paragraphStart + cluster.offset };
+			}
+			groups[index].parts.push(cluster.segment);
+		}
+
+		for (const group of groups) {
+			if (group) lines.push({ text: group.parts.join(""), start: group.start });
+		}
+		paragraphStart += paragraph.length + 1;
+	}
+	return lines.length ? lines : [{ text: "", start: 0 }];
+}
+
+let layoutCacheKey = "";
+let layoutCacheLines = [];
+
+function getPageLines(text, measure) {
+	updateTextOverlayStyles();
+	const key = [
+		fontMode,
+		textarea.style.width,
+		textarea.style.fontSize,
+		textarea.style.paddingTop,
+		text,
+	].join("\u0000");
+	if (key === layoutCacheKey) return layoutCacheLines;
+
+	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
 	measure.font = fontSpec(fontMode, FONT_SIZE);
 	measure.textBaseline = "alphabetic";
-	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
-	return wrapText(text, maxWidth, measure);
+
+	let lines = null;
+	try {
+		lines = mirrorLines(text);
+	} catch {
+		// Range measurement is unavailable in very old webviews.
+		lines = null;
+	}
+	if (!lines) lines = layoutTextLines(text, maxWidth, measure);
+
+	layoutCacheKey = key;
+	layoutCacheLines = lines;
+	return lines;
+}
+
+function wrappedPage(text, measure) {
+	return getPageLines(text, measure);
 }
 
 function rebuildPageCache() {
@@ -290,6 +399,7 @@ function render() {
 	if (!ctx) return;
 
 	const t0 = isMobile ? performance.now() : 0;
+	updateTextOverlayStyles();
 	if (pageDirty) rebuildPageCache();
 
 	ctx.save();
@@ -305,20 +415,6 @@ function render() {
 	if (pageCanvas) ctx.drawImage(pageCanvas, 0, 0, PAPER_WIDTH, PAPER_HEIGHT);
 
 	ctx.restore();
-
-	const scale = viewScale;
-	const textX = LEFT_MARGIN + TEXT_INSET;
-	const textWidth = PAPER_WIDTH - RIGHT_MARGIN - textX;
-
-	textarea.style.left = (viewX + textX * scale) + "px";
-	textarea.style.top = (viewY + TOP_MARGIN * scale) + "px";
-	textarea.style.width = (textWidth * scale) + "px";
-	textarea.style.height = ((PAPER_HEIGHT - TOP_MARGIN - BOTTOM_MARGIN) * scale) + "px";
-	textarea.style.fontSize = (FONT_SIZE * scale) + "px";
-	textarea.style.lineHeight = (LINE_GAP * scale) + "px";
-
-	const padTop = TEXT_PAD_TOP * scale;
-	textarea.style.paddingTop = Math.max(0, padTop) + "px";
 
 	dirty = false;
 	if (isMobile && pointers.size > 0) {
@@ -503,35 +599,25 @@ function caretIndexFromPoint(cx, cy) {
 
 	ctx.font = fontSpec(fontMode, FONT_SIZE);
 	const text = textarea.value;
-	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
-	const wrapped = wrapText(text, maxWidth, ctx);
-	const lineIndex = Math.max(0, Math.min(wrapped.length - 1, Math.floor((paper.y - TOP_MARGIN) / LINE_GAP)));
-	const line = wrapped[lineIndex] || "";
+	const lines = getPageLines(text, ctx);
+	const lineIndex = Math.max(0, Math.min(lines.length - 1, Math.floor((paper.y - TOP_MARGIN) / LINE_GAP)));
+	const line = lines[lineIndex];
+	if (!line) return 0;
 
-	let column = 0;
-	let width = 0;
 	const target = paper.x - (LEFT_MARGIN + TEXT_INSET);
-	for (const ch of line) {
-		const w = ctx.measureText(ch).width;
-		if (target < width + w / 2) break;
-		width += w;
-		column += ch.length;
+	let column = 0;
+	let prefixWidth = 0;
+	// Measure cumulative prefixes, never one code point at a time: shaping makes
+	// a Myanmar mark's width depend on the characters before it.
+	for (const cluster of graphemeOffsets(line.text)) {
+		const end = cluster.offset + cluster.segment.length;
+		const width = ctx.measureText(line.text.slice(0, end)).width;
+		if (target < prefixWidth + (width - prefixWidth) / 2) break;
+		prefixWidth = width;
+		column = end;
 	}
 
-	let offset = 0;
-	for (let i = 0; i < lineIndex; i++) {
-		const visual = wrapped[i];
-		if (visual === "") {
-			offset += 1;
-			continue;
-		}
-		const at = text.indexOf(visual, offset);
-		if (at < 0) break;
-		offset = at + visual.length;
-		if (text[offset] === " " || text[offset] === "\n") offset += 1;
-	}
-
-	return Math.min(offset + column, text.length);
+	return Math.min(line.start + column, text.length);
 }
 
 function focusCaretAt(cx, cy) {
@@ -556,13 +642,26 @@ function visualViewportBounds() {
 	return { top: vv.offsetTop, bottom: vv.offsetTop + vv.height };
 }
 
+function lineIndexForOffset(lines, index) {
+	for (let i = 0; i < lines.length; i++) {
+		const end = lines[i].start + lines[i].text.length;
+		if (index < end) return i;
+		if (index === end) {
+			const next = lines[i + 1];
+			// A soft wrap has no separator: the next line starts exactly where
+			// this one ends, so the caret belongs on the next visual row.
+			if (next && next.start === end) continue;
+			return i;
+		}
+	}
+	return Math.max(0, lines.length - 1);
+}
+
 function caretLineIndex() {
 	const text = textarea.value;
 	const index = Math.max(0, Math.min(text.length, textarea.selectionStart));
-	ctx.font = fontSpec(fontMode, FONT_SIZE);
-	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET);
-	// Wrapping everything before the caret puts the caret on the last line.
-	return Math.max(0, wrapText(text.slice(0, index), maxWidth, ctx).length - 1);
+	const lines = getPageLines(text, ctx);
+	return lineIndexForOffset(lines, index);
 }
 
 // Pan (never zoom) so the caret sits above the keyboard. The page can move

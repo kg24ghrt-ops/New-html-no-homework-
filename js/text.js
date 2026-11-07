@@ -9,9 +9,22 @@ const graphemeSegmenter =
 		? new Intl.Segmenter(undefined, { granularity: "grapheme" })
 		: null;
 
-function graphemes(text) {
+export function graphemes(text) {
 	if (!graphemeSegmenter) return Array.from(text);
 	return Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
+}
+
+// Grapheme clusters with their UTF-16 offsets in the original string. Caret
+// placement and source-stable ink seeds both need the offset, not just the
+// visible cluster.
+export function graphemeOffsets(text) {
+	if (!graphemeSegmenter) {
+		return Array.from(text, (segment, offset) => ({ segment, offset }));
+	}
+	return Array.from(graphemeSegmenter.segment(text), (part) => ({
+		segment: part.segment,
+		offset: part.index,
+	}));
 }
 
 function fitWord(word, maxWidth, result, measure) {
@@ -62,6 +75,28 @@ export function wrapText(text, maxWidth, measure) {
 		wrapLine(line, maxWidth, result, measure);
 	}
 	return result;
+}
+
+// Same wrapping as wrapText, but each visual line remembers where it starts in
+// the source text. That absolute offset is what keeps ink seeds stable and
+// lets a tap map back to the right character.
+export function layoutTextLines(text, maxWidth, measure) {
+	const wrapped = wrapText(text, maxWidth, measure);
+	const lines = [];
+	let offset = 0;
+	for (const visual of wrapped) {
+		if (visual === "") {
+			lines.push({ text: "", start: offset });
+			offset += 1;
+			continue;
+		}
+		const at = text.indexOf(visual, offset);
+		const start = at < 0 ? offset : at;
+		lines.push({ text: visual, start });
+		offset = start + visual.length;
+		if (text[offset] === " " || text[offset] === "\n") offset += 1;
+	}
+	return lines;
 }
 
 // Find the largest prefix that still fits on one page. Binary search keeps the
