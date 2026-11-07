@@ -1034,6 +1034,19 @@ if (window.visualViewport) {
 	window.visualViewport.addEventListener("scroll", onViewportChange);
 }
 
+// Prefer the browser's visual line starts for the page cut, so we never break
+// in the middle of a Myanmar syllable that the textarea kept together. Fall
+// back to wrapText if the mirror is unavailable.
+function splitPageForDisplay(text, measure, maxLines, maxWidth) {
+	const lines = getPageLines(text, measure);
+	if (lines.length <= maxLines) return null;
+	const cut = lines[maxLines] ? lines[maxLines].start : 0;
+	if (cut > 0 && cut < text.length) {
+		return { head: text.slice(0, cut), tail: text.slice(cut), cut };
+	}
+	return splitPage(text, maxWidth, maxLines, measure);
+}
+
 // Move overflowing text from the last page onto a new page.
 function checkPageFlow() {
 	if (currentPage !== pages.length - 1) return;
@@ -1042,7 +1055,7 @@ function checkPageFlow() {
 	const maxLines = Math.floor((PAPER_HEIGHT - TOP_MARGIN - BOTTOM_MARGIN) / LINE_GAP);
 	const textX = LEFT_MARGIN + TEXT_INSET;
 	const maxWidth = PAPER_WIDTH - RIGHT_MARGIN - textX;
-	const split = splitPage(textarea.value, maxWidth, maxLines, ctx);
+	const split = splitPageForDisplay(textarea.value, ctx, maxLines, maxWidth);
 	if (!split) return;
 
 	pages[currentPage] = split.head;
