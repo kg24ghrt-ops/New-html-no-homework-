@@ -92,13 +92,14 @@ let pageDirty = true;
 let rafId = null;
 let pendingKeystrokePerf = false;
 let frameCount = 0;
+let fontsReady = false;
 
 const isMobile = window.matchMedia("(pointer: coarse)").matches;
 const INK_QUALITY = isMobile ? 0.5 : 1;
 const SCREEN_QUALITY = isMobile ? 0.75 : 1;
 
-// Measure the same monospace font the textarea uses. The textarea has to place
-// its first baseline exactly where the canvas draws line 0.
+// Measure the same font stack the textarea uses. The textarea has to place its
+// first baseline exactly where the canvas draws line 0.
 const measureCanvas = document.createElement("canvas");
 const measureCtx = measureCanvas.getContext("2d");
 
@@ -435,7 +436,7 @@ function rebuildPageCache() {
 }
 
 function render() {
-	if (!ctx) return;
+	if (!ctx || !fontsReady) return;
 
 	const t0 = isMobile ? performance.now() : 0;
 	updateTextOverlayStyles();
@@ -1311,6 +1312,7 @@ async function init() {
 	// Baseline placement depends on the real font metrics, and the canvas ink
 	// must not be rasterized with the fallback face. Resolve both faces first.
 	await loadInkFonts(FONT_SIZE);
+	fontsReady = true;
 	TEXT_PAD_TOP = textPadTop(fontMode);
 	clearInkLineCache();
 	releaseInkPage(INK_QUALITY);
