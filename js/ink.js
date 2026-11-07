@@ -20,6 +20,13 @@ const LINE_BASELINE = LINE_GAP + BASELINE_OFFSET;
 const GRAIN_SIZE = 512;
 const BLOTCH_SIZE = 24;
 const MAX_LINE_CACHE = 300;
+// Myanmar stacked marks are taller than Latin. Give every cached line 3mm of
+// vertical breathing room above and below the 7mm ruled row; rows overlap a
+// little and are composited with multiply on the page.
+const LINE_PAD = 3 * MM;
+const LINE_SIDE_PAD = 2 * MM;
+const LINE_CANVAS_HEIGHT = LINE_GAP + LINE_PAD * 2;
+const CONTENT_BASELINE = LINE_PAD + LINE_BASELINE;
 const DEG = Math.PI / 180;
 const MAX_LINE_X_MM = (PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET)) / MM;
 
@@ -168,7 +175,7 @@ export function inkBaselineY(lineIndex) {
 // Broad, soft bleed under the glyph edges: what ink does when it soaks into
 // paper. Drawn once per line so it stays coherent, then the crisp body covers
 // the middle and leaves a faint wet halo.
-function drawBleed(g, line, baseline, seed) {
+function drawBleed(g, line, baseline, seed, textX = LEFT_MARGIN + TEXT_INSET) {
 	const rand = makeRandom(seed ^ 0x2f6e1b93);
 	g.save();
 	g.globalCompositeOperation = "source-over";
@@ -176,7 +183,7 @@ function drawBleed(g, line, baseline, seed) {
 	g.shadowBlur = Math.max(1.2, MM * 0.38);
 	g.globalAlpha = 0.55;
 	g.fillStyle = inkColor(0.75);
-	g.fillText(line, LEFT_MARGIN + TEXT_INSET, baseline + (rand() - 0.5) * 0.5);
+	g.fillText(line, textX, baseline + (rand() - 0.5) * 0.5);
 	g.restore();
 }
 
@@ -188,7 +195,7 @@ export function drawCharacters(g, line, baseline, options = {}) {
 	const pageId = options.pageId ?? "page";
 	const start = options.start ?? 0;
 	const lineSeed = hashSeed(pageId, start, "\u0000line");
-	const textX = LEFT_MARGIN + TEXT_INSET;
+	const textX = options.textX ?? (LEFT_MARGIN + TEXT_INSET);
 	if (line === "") return;
 
 	for (const run of scriptRuns(line)) {
@@ -274,9 +281,14 @@ function getLineCanvas(text, quality, options = {}) {
 	const cached = lineCache.get(key);
 	if (cached) return cached;
 
+	const scratch = document.createElement("canvas").getContext("2d");
+	scratch.font = fontSpec(fontMode, FONT_SIZE);
+	const textWidth = scratch.measureText(text).width;
+	const cssWidth = textWidth + LINE_SIDE_PAD * 2;
+
 	const canvas = document.createElement("canvas");
-	canvas.width = Math.max(1, Math.round(PAPER_WIDTH * quality));
-	canvas.height = Math.max(1, Math.round(LINE_GAP * quality));
+	canvas.width = Math.max(1, Math.round(cssWidth * quality));
+	canvas.height = Math.max(1, Math.round(LINE_CANVAS_HEIGHT * quality));
 	const g = canvas.getContext("2d");
 	g.scale(quality, quality);
 	g.font = fontSpec(fontMode, FONT_SIZE);
@@ -286,16 +298,16 @@ function getLineCanvas(text, quality, options = {}) {
 	const lineRand = makeRandom(hashSeed(pageId, start, "\u0000line"));
 	const lineAngle = (lineRand() - 0.5) * 2 * INK_LIMITS.lineRotation;
 	const lineWobble = (lineRand() - 0.5) * 2 * INK_LIMITS.lineWobble;
-	const textX = LEFT_MARGIN + TEXT_INSET;
+	const textX = LINE_SIDE_PAD;
 
 	// Whole-line realism: one tiny rotation plus a left-edge wobble. The
 	// baseline stays where the textarea expects it.
 	g.save();
-	g.translate(textX + lineWobble, LINE_BASELINE);
+	g.translate(textX + lineWobble, CONTENT_BASELINE);
 	g.rotate(lineAngle);
-	g.translate(-textX, -LINE_BASELINE);
-	drawBleed(g, text, LINE_BASELINE, hashSeed(pageId, start, "\u0000bleed"));
-	drawCharacters(g, text, LINE_BASELINE, { pageId, start });
+	g.translate(-textX, -CONTENT_BASELINE);
+	drawBleed(g, text, CONTENT_BASELINE, hashSeed(pageId, start, "\u0000bleed"), textX);
+	drawCharacters(g, text, CONTENT_BASELINE, { pageId, start, textX });
 	g.restore();
 
 	ensureGrain();
@@ -304,7 +316,7 @@ function getLineCanvas(text, quality, options = {}) {
 		g.globalCompositeOperation = "destination-out";
 		g.globalAlpha = 1;
 		g.fillStyle = pattern;
-		g.fillRect(0, 0, PAPER_WIDTH, LINE_GAP);
+		g.fillRect(0, 0, cssWidth, LINE_CANVAS_HEIGHT);
 		g.globalCompositeOperation = "source-over";
 	}
 
@@ -325,9 +337,9 @@ function getPage(quality) {
 	return page;
 }
 
-// Returns a transparent page-sized ink layer. Only rows whose line text,
-// source offset or page identity changed are rasterized again; unchanged lines
-// are reused from lineCache.
+// Returns a transparent page-sized ink layer. The page itself is composited
+// again on every change (cheap drawImage calls), while each line raster is
+// reused from lineCache until its text, source offset or font changes.
 export function getInkPage(wrapped, quality = 1, options = {}) {
 	const opts = typeof options === "string" ? { fontMode: options } : options;
 	const fontMode = opts.fontMode ?? "monospace";
@@ -349,8 +361,9 @@ export function getInkPage(wrapped, quality = 1, options = {}) {
 			start: line.start,
 		});
 		if (!lineCanvas) continue;
-		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP) * quality);
-		ctx.drawImage(lineCanvas, 0, rowY);
+		const rowX = Math.round((LEFT_MARGIN + TEXT_INSET - LINE_SIDE_PAD) * quality);
+		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP - LINE_PAD) * quality);
+		ctx.drawImage(lineCanvas, rowX, rowY);
 	}
 
 	// Optional ghost of the previous page, mirrored and very faint. It is a
@@ -370,8 +383,9 @@ export function getInkPage(wrapped, quality = 1, options = {}) {
 				start: line.start,
 			});
 			if (!lineCanvas) continue;
-			const rowY = Math.round((TOP_MARGIN + i * LINE_GAP) * quality);
-			ctx.drawImage(lineCanvas, 0, rowY);
+			const rowX = Math.round((LEFT_MARGIN + TEXT_INSET - LINE_SIDE_PAD) * quality);
+			const rowY = Math.round((TOP_MARGIN + i * LINE_GAP - LINE_PAD) * quality);
+			ctx.drawImage(lineCanvas, page.canvas.width - rowX - lineCanvas.width, rowY);
 		}
 		ctx.restore();
 	}
