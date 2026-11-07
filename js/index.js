@@ -178,6 +178,9 @@ function loadState() {
 
 loadState();
 ensurePageIds();
+// Persist generated page ids immediately so ink stays identical across
+// reloads even before the first keystroke.
+saveState();
 
 document.documentElement.style.setProperty("--ink-font-stack", fontStack(fontMode));
 textarea.style.fontFamily = fontStack(fontMode);
