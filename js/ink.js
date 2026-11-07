@@ -23,9 +23,9 @@ const MAX_LINE_CACHE = 300;
 // Myanmar stacked marks are taller than Latin. Give every cached line 3mm of
 // vertical breathing room above and below the 7mm ruled row; rows overlap a
 // little and are composited with multiply on the page.
-const LINE_PAD = 3 * MM;
+export const LINE_PAD = 3 * MM;
 const LINE_SIDE_PAD = 2 * MM;
-const LINE_CANVAS_HEIGHT = LINE_GAP + LINE_PAD * 2;
+export const LINE_CANVAS_HEIGHT = LINE_GAP + LINE_PAD * 2;
 const CONTENT_BASELINE = LINE_PAD + LINE_BASELINE;
 const DEG = Math.PI / 180;
 const MAX_LINE_X_MM = (PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET)) / MM;

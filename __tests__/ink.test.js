@@ -1,12 +1,15 @@
 import * as paper from "../js/paper.js";
 import {
 	INK_LIMITS,
+	LINE_CANVAS_HEIGHT,
+	LINE_PAD,
 	baselineWander,
 	drawCharacters,
 	glyphJitter,
 	inkBaselineY,
 	wordJitter,
 } from "../js/ink.js";
+import { graphemeOffsets, graphemes } from "../js/text.js";
 
 function mockCtx() {
 	const calls = [];
@@ -49,6 +52,45 @@ describe("ink text layout", () => {
 		const myanmar = g.calls.filter((call) => call.text === "မြန်မာ");
 		expect(myanmar).toHaveLength(1);
 		expect(g.calls.map((call) => call.text).join("")).toBe("Helloမြန်မာworld");
+	});
+
+	test("Burmese fillText strings are whole grapheme clusters and concatenate to the line", () => {
+		const g = mockCtx();
+		const line = "မြန်မာစာ";
+		drawCharacters(g, line, 100, { pageId: "p1", start: 0 });
+		expect(g.calls.map((call) => call.text).join("")).toBe(line);
+
+		const clusters = graphemes(line);
+		for (const call of g.calls) {
+			let rest = call.text;
+			let index = 0;
+			while (rest) {
+				expect(rest.startsWith(clusters[index])).toBe(true);
+				rest = rest.slice(clusters[index].length);
+				index++;
+			}
+		}
+	});
+
+	test("visual drawing never changes the line's measured advance", () => {
+		const g = mockCtx();
+		const line = "Hello မြန်မာ world";
+		const plain = g.measureText(line).width;
+		drawCharacters(g, line, 100, { pageId: "p1", start: 3 });
+		expect(g.measureText(line).width).toBe(plain);
+
+		// The last cluster's cumulative prefix plus its own advance reaches the
+		// same plain-text width; jitter is not part of that sum.
+		const clusters = graphemeOffsets(line);
+		const last = clusters[clusters.length - 1];
+		const prefix = g.measureText(line.slice(0, last.offset)).width;
+		const advance = g.measureText(last.segment).width;
+		expect(prefix + advance).toBe(plain);
+	});
+
+	test("line canvases are padded above and below the 7mm row", () => {
+		expect(LINE_PAD).toBeCloseTo(3 * paper.MM);
+		expect(LINE_CANVAS_HEIGHT).toBeCloseTo(paper.LINE_GAP + 6 * paper.MM);
 	});
 
 	test("appending to a line does not restyle earlier glyphs", () => {

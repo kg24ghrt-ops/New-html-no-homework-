@@ -46,3 +46,32 @@ textarea x, baseline sits above the rule), and text inset vs margin line.
 - `S`: toggle faint show-through of the previous page (off by default)
 - Export button: download the full current page as PNG
 - Writing is saved automatically in this browser
+
+## Manual phone checklist
+
+The browser test suite cannot shape Myanmar or place a real caret, so check
+these on a phone (or a mobile emulator) before shipping:
+
+1. Open the app over `http://` or `https://` (or a browser that allows local
+   module/font loading) and wait for the paper to appear.
+2. In Handwriting mode, type a Burmese paragraph containing stacked
+   consonants, for example:
+   `မြန်မာစာ ကျွန်တော် ပြည်ထောင်စု`
+   - No tofu boxes, no missing or clipped marks above/below the rule.
+3. Type a mixed line: `Hello မြန်မာ world hello` and let it wrap.
+   - The English letters keep their handwriting jitter.
+   - The whole Burmese word is drawn in one piece (no broken stacks).
+4. Tap in the middle of a Burmese syllable after wrapping. The caret must sit
+   on the same syllable, not one code point left or right.
+5. Type at the end of a line and keep typing.
+   - Earlier letters must not shimmer or change shade.
+   - After wrapping, tap the new line and confirm the caret still lands on the
+     right syllable.
+6. Undo (`Ctrl+Z` or the undo button) and make sure the caret returns to the
+   same place and the drawn text still matches.
+7. Switch to Monospace (`F`) if the device shapes Burmese badly, then switch
+   back. Text position and wrapping must stay aligned in both modes.
+8. Toggle show-through (`S`); the previous page is a faint mirrored ghost and
+   never changes the caret or the live text.
+9. Rotate the device / change the viewport and confirm the red margin, rules
+   and textarea text stay in the same place.
