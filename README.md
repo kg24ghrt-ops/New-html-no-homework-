@@ -30,7 +30,8 @@ npm test
 
 Uses Jest. Tests cover paper constants, text wrapping and page splitting,
 `paperRect` aspect/fit/mobile behavior, text alignment (canvas x equals
-textarea x, baseline sits above the rule), and text inset vs margin line.
+textarea x, baseline sits above the rule), script-run splitting, whole Myanmar
+runs, visual offset caps, stable per-glyph jitter and line padding.
 
 ## Controls
 
