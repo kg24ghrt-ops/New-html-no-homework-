@@ -77,6 +77,7 @@ let undoTimer = null;
 let template = "ruled";
 let showMargin = true;
 let showHoles = true;
+let showThrough = false;
 let fontMode = "handwriting";
 
 const STORAGE_KEY = "b5-notebook-v1";
@@ -138,6 +139,7 @@ function saveState() {
 			template,
 			showMargin,
 			showHoles,
+			showThrough,
 			fontMode,
 		}));
 	} catch {
@@ -159,6 +161,7 @@ function loadState() {
 		if (["ruled", "grid", "dotted"].includes(saved.template)) template = saved.template;
 		if (typeof saved.showMargin === "boolean") showMargin = saved.showMargin;
 		if (typeof saved.showHoles === "boolean") showHoles = saved.showHoles;
+		if (typeof saved.showThrough === "boolean") showThrough = saved.showThrough;
 		if (FONT_MODES.includes(saved.fontMode)) fontMode = saved.fontMode;
 	} catch {
 		// Ignore a corrupt save rather than blocking startup.
@@ -392,7 +395,16 @@ function rebuildPageCache() {
 	}
 
 	const wrapped = wrappedPage(pages[currentPage], ctx);
-	const ink = getInkPage(wrapped, INK_QUALITY, { fontMode, pageId: currentPageId() });
+	const previous = showThrough && currentPage > 0
+		? wrappedPage(pages[currentPage - 1], ctx)
+		: null;
+	const ink = getInkPage(wrapped, INK_QUALITY, {
+		fontMode,
+		pageId: currentPageId(),
+		showThrough,
+		previousLines: previous,
+		previousPageId: pageIds[currentPage - 1],
+	});
 
 	pageCtx.setTransform(1, 0, 0, 1, 0, 0);
 	pageCtx.globalCompositeOperation = "source-over";
@@ -1132,6 +1144,20 @@ holesBtn.addEventListener("click", () => {
 });
 templateToggle.appendChild(holesBtn);
 
+const showThroughBtn = document.createElement("button");
+showThroughBtn.className = "templateBtn" + (showThrough ? " active" : "");
+showThroughBtn.textContent = "S";
+showThroughBtn.title = "Show-through of previous page";
+showThroughBtn.addEventListener("click", () => {
+	showThrough = !showThrough;
+	showThroughBtn.classList.toggle("active", showThrough);
+	dirty = true;
+	pageDirty = true;
+	scheduleRender();
+	saveState();
+});
+templateToggle.appendChild(showThroughBtn);
+
 const fontBtn = document.createElement("button");
 fontBtn.className = "templateBtn" + (fontMode === "handwriting" ? " active" : "");
 fontBtn.textContent = "F";
@@ -1192,7 +1218,16 @@ function exportPage() {
 	// Export always uses the full-resolution ink layer, even on phones where
 	// the on-screen layer is half size.
 	const wrapped = wrappedPage(pages[currentPage], outCtx);
-	const ink = getInkPage(wrapped, 1, { fontMode, pageId: currentPageId() });
+	const previous = showThrough && currentPage > 0
+		? wrappedPage(pages[currentPage - 1], outCtx)
+		: null;
+	const ink = getInkPage(wrapped, 1, {
+		fontMode,
+		pageId: currentPageId(),
+		showThrough,
+		previousLines: previous,
+		previousPageId: pageIds[currentPage - 1],
+	});
 	outCtx.globalCompositeOperation = "multiply";
 	outCtx.drawImage(ink, 0, 0);
 	outCtx.globalCompositeOperation = "source-over";

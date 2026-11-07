@@ -42,5 +42,7 @@ textarea x, baseline sits above the rule), and text inset vs margin line.
 - Ctrl+Z / Ctrl+Shift+Z: undo / redo
 - Prev/Next buttons: navigate pages
 - Template buttons: switch ruled / grid / dotted, toggle margin line and holes
+- `F`: switch Handwriting / Monospace (saved in settings)
+- `S`: toggle faint show-through of the previous page (off by default)
 - Export button: download the full current page as PNG
 - Writing is saved automatically in this browser

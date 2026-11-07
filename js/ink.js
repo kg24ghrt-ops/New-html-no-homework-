@@ -7,6 +7,7 @@ import {
 	MM,
 	PAPER_HEIGHT,
 	PAPER_WIDTH,
+	RIGHT_MARGIN,
 	TOP_MARGIN,
 	TEXT_INSET,
 } from "./paper.js";
@@ -14,12 +15,27 @@ import {
 // Dark blue-black fountain-pen ink. Kept close to the original text tone so
 // contrast and readability stay the same.
 const INK = [28, 38, 58];
-const INK_DARK = [12, 18, 34];
 const BASELINE_OFFSET = -1.5 * MM;
 const LINE_BASELINE = LINE_GAP + BASELINE_OFFSET;
 const GRAIN_SIZE = 512;
 const BLOTCH_SIZE = 24;
 const MAX_LINE_CACHE = 300;
+const DEG = Math.PI / 180;
+const MAX_LINE_X_MM = (PAPER_WIDTH - RIGHT_MARGIN - (LEFT_MARGIN + TEXT_INSET)) / MM;
+
+// Every realism offset is capped here and is visual only. None of these
+// values feeds back into the advance of the next glyph.
+export const INK_LIMITS = Object.freeze({
+	glyphDx: 0.1 * MM,
+	glyphSize: 0.03,
+	glyphRotation: 2 * DEG,
+	glyphSlant: 0.02,
+	wordDx: 0.4 * MM,
+	baselineWander: 0.6 * MM,
+	myanmarRotation: 0.3 * DEG,
+	lineRotation: 0.15 * DEG,
+	lineWobble: 0.4 * MM,
+});
 
 const lineCache = new Map();
 const inkPages = new Map();
@@ -60,6 +76,47 @@ export function hashSeed(pageId, offset, text) {
 
 function wordSeed(pageId, wordStart) {
 	return hashSeed(pageId, wordStart, "\u0000word");
+}
+
+// Per-glyph visual jitter. The caller keeps the real advance from cumulative
+// measureText widths; these numbers only move the glyph on screen.
+export function glyphJitter(pageId, offset, ch) {
+	const rand = makeRandom(hashSeed(pageId, offset, ch));
+	return {
+		dx: (rand() - 0.5) * 2 * INK_LIMITS.glyphDx,
+		scale: 1 + (rand() - 0.5) * 2 * INK_LIMITS.glyphSize,
+		rotation: (rand() - 0.5) * 2 * INK_LIMITS.glyphRotation,
+		slant: (rand() - 0.5) * 2 * INK_LIMITS.glyphSlant,
+		pressure: rand(),
+		blob: rand() > 0.9,
+	};
+}
+
+// Per-word visual offset and shade. Seeded from the word's first source
+// character, so appending to the end of a word never changes earlier ink.
+export function wordJitter(pageId, wordStart) {
+	const rand = makeRandom(wordSeed(pageId, wordStart));
+	return {
+		dx: (rand() - 0.5) * 2 * INK_LIMITS.wordDx,
+		shade: 0.88 + rand() * 0.12,
+		rotation: (rand() - 0.5) * 2 * INK_LIMITS.myanmarRotation,
+	};
+}
+
+// Low-frequency baseline wander: two slow sines plus a little noise, faded to
+// zero at the right edge of the widest line. It is a function of distance from
+// the line start only, so earlier glyphs never move when text is appended.
+export function baselineWander(lineSeed, xMm) {
+	const rand = makeRandom(lineSeed ^ 0x9e3779b9);
+	const p1 = rand() * Math.PI * 2;
+	const p2 = rand() * Math.PI * 2;
+	const p3 = rand() * Math.PI * 2;
+	const raw =
+		0.60 * Math.sin(xMm * 0.075 + p1) +
+		0.32 * Math.sin(xMm * 0.19 + p2) +
+		0.08 * Math.sin(xMm * 0.9 + p3);
+	const fade = xMm <= 130 ? 1 : Math.max(0, (MAX_LINE_X_MM - xMm) / (MAX_LINE_X_MM - 130));
+	return raw * INK_LIMITS.baselineWander * fade;
 }
 
 // Tileable paper-fibre grain plus soft density blotches. Drawn with
@@ -130,9 +187,8 @@ function drawBleed(g, line, baseline, seed) {
 export function drawCharacters(g, line, baseline, options = {}) {
 	const pageId = options.pageId ?? "page";
 	const start = options.start ?? 0;
-	const lineRand = makeRandom(hashSeed(pageId, start, "\u0000line"));
+	const lineSeed = hashSeed(pageId, start, "\u0000line");
 	const textX = LEFT_MARGIN + TEXT_INSET;
-	const y = baseline + (lineRand() - 0.5) * 0.8;
 	if (line === "") return;
 
 	for (const run of scriptRuns(line)) {
@@ -141,46 +197,70 @@ export function drawCharacters(g, line, baseline, options = {}) {
 
 		if (run.script === "myanmar") {
 			// One call for the whole run: stacked consonants, medials and
-			// reordered vowels stay intact. Only run-level ink varies.
+			// reordered vowels stay intact. Realism is run-level only.
 			const runRand = makeRandom(hashSeed(pageId, runStart, run.text));
-			const shade = 0.88 + runRand() * 0.16;
-			g.globalAlpha = 0.88 + runRand() * 0.12;
+			const shade = 0.88 + runRand() * 0.12;
+			const alpha = 0.88 + runRand() * 0.1;
+			const rotation = (runRand() - 0.5) * 2 * INK_LIMITS.myanmarRotation;
+			const runWidth = g.measureText(run.text).width;
+			const xMm = (runX - textX + runWidth / 2) / MM;
+			const wander = baselineWander(lineSeed, xMm);
+
+			g.save();
+			g.translate(runX, baseline + wander);
+			g.rotate(rotation);
+			g.globalAlpha = alpha;
 			g.fillStyle = inkColor(shade);
-			g.fillText(run.text, runX, y);
+			g.fillText(run.text, 0, 0);
+			g.restore();
 			continue;
 		}
 
 		let wordStart = 0;
+		let wordGlyph = 0;
+		let afterSpace = true;
 		for (const cluster of graphemeOffsets(run.text)) {
 			const ch = cluster.segment;
 			if (ch.trim() === "") {
-				wordStart = cluster.offset + ch.length;
+				afterSpace = true;
 				continue;
+			}
+			if (afterSpace) {
+				wordStart = cluster.offset;
+				wordGlyph = 0;
+				afterSpace = false;
 			}
 
 			const absolute = runStart + cluster.offset;
-			const glyphRand = makeRandom(hashSeed(pageId, absolute, ch));
-			// Per-word shade, not charIndex/line.length: appending a character
-			// never changes the shade of earlier words.
-			const shadeRand = makeRandom(wordSeed(pageId, runStart + wordStart));
-			const shade = (0.88 + shadeRand() * 0.12) * (0.94 + glyphRand() * 0.1);
-			const alpha = 0.82 + glyphRand() * 0.18;
-			const dx = (glyphRand() - 0.5) * 0.6;
-			const dy = (glyphRand() - 0.5) * 0.9;
-
+			const jitter = glyphJitter(pageId, absolute, ch);
+			const word = wordJitter(pageId, runStart + wordStart);
 			const prefix = line.slice(0, run.start + cluster.offset);
-			const x = textX + g.measureText(prefix).width;
+			const prefixWidth = g.measureText(prefix).width;
+			const wander = baselineWander(lineSeed, prefixWidth / MM);
 
+			// Ink is loaded at the start of a word and thins slightly towards
+			// its end. This depends on distance from the word start, not word
+			// length, so appending never changes earlier glyphs.
+			const fade = Math.min(0.16, wordGlyph * 0.02);
+			const shade = word.shade
+				* (1.02 - fade * 0.5)
+				* (0.97 + jitter.pressure * 0.06)
+				* (jitter.blob ? 0.94 : 1);
+			const alpha = Math.max(
+				0.8,
+				Math.min(1, 0.98 - fade + (jitter.pressure - 0.5) * 0.03),
+			);
+
+			g.save();
+			g.translate(prefixWidth + textX + word.dx + jitter.dx, baseline + wander);
+			g.rotate(jitter.rotation);
+			g.transform(1, 0, jitter.slant, 1, 0, 0);
+			g.scale(jitter.scale, jitter.scale);
 			g.globalAlpha = alpha;
 			g.fillStyle = inkColor(shade);
-			g.fillText(ch, x + dx, y + dy);
-
-			// A few glyphs carry a darker blob where the pen slowed down.
-			if (glyphRand() > 0.9) {
-				g.globalAlpha = 0.35 + glyphRand() * 0.25;
-				g.fillStyle = inkColor(0.65, INK_DARK);
-				g.fillText(ch, x + dx, y + dy);
-			}
+			g.fillText(ch, 0, 0);
+			g.restore();
+			wordGlyph++;
 		}
 	}
 }
@@ -203,9 +283,20 @@ function getLineCanvas(text, quality, options = {}) {
 	g.textBaseline = "alphabetic";
 	g.imageSmoothingEnabled = true;
 
-	const seed = hashSeed(pageId, start, "\u0000bleed");
-	drawBleed(g, text, LINE_BASELINE, seed);
+	const lineRand = makeRandom(hashSeed(pageId, start, "\u0000line"));
+	const lineAngle = (lineRand() - 0.5) * 2 * INK_LIMITS.lineRotation;
+	const lineWobble = (lineRand() - 0.5) * 2 * INK_LIMITS.lineWobble;
+	const textX = LEFT_MARGIN + TEXT_INSET;
+
+	// Whole-line realism: one tiny rotation plus a left-edge wobble. The
+	// baseline stays where the textarea expects it.
+	g.save();
+	g.translate(textX + lineWobble, LINE_BASELINE);
+	g.rotate(lineAngle);
+	g.translate(-textX, -LINE_BASELINE);
+	drawBleed(g, text, LINE_BASELINE, hashSeed(pageId, start, "\u0000bleed"));
 	drawCharacters(g, text, LINE_BASELINE, { pageId, start });
+	g.restore();
 
 	ensureGrain();
 	const pattern = g.createPattern(grainTile, "repeat");
@@ -243,30 +334,49 @@ export function getInkPage(wrapped, quality = 1, options = {}) {
 	const pageId = opts.pageId ?? "page";
 	const page = getPage(quality);
 	const ctx = page.ctx;
+	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.globalCompositeOperation = "source-over";
 	ctx.globalAlpha = 1;
+	ctx.clearRect(0, 0, page.canvas.width, page.canvas.height);
 
 	const lines = wrapped.map((line) => (typeof line === "string" ? { text: line, start: 0 } : line));
-	const lineH = Math.max(1, Math.round(LINE_GAP * quality));
-	const max = Math.max(page.keys.length, lines.length);
-	for (let i = 0; i < max; i++) {
-		const line = i < lines.length ? lines[i] : null;
-		const key = line ? [line.text, line.start, pageId].join("\u0000") : null;
-		if (page.keys[i] === key) continue;
-
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (!line.text) continue;
+		const lineCanvas = getLineCanvas(line.text, quality, {
+			fontMode,
+			pageId,
+			start: line.start,
+		});
+		if (!lineCanvas) continue;
 		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP) * quality);
-		ctx.clearRect(0, rowY, page.canvas.width, lineH);
-		if (line && line.text) {
+		ctx.drawImage(lineCanvas, 0, rowY);
+	}
+
+	// Optional ghost of the previous page, mirrored and very faint. It is a
+	// separate layer so it can never affect the live text or the caret.
+	if (opts.showThrough && Array.isArray(opts.previousLines)) {
+		const previousId = opts.previousPageId ?? `${pageId}-previous`;
+		ctx.save();
+		ctx.globalAlpha = 0.04;
+		ctx.translate(page.canvas.width, 0);
+		ctx.scale(-1, 1);
+		for (let i = 0; i < opts.previousLines.length; i++) {
+			const line = opts.previousLines[i];
+			if (!line.text) continue;
 			const lineCanvas = getLineCanvas(line.text, quality, {
 				fontMode,
-				pageId,
+				pageId: previousId,
 				start: line.start,
 			});
-			if (lineCanvas) ctx.drawImage(lineCanvas, 0, rowY);
+			if (!lineCanvas) continue;
+			const rowY = Math.round((TOP_MARGIN + i * LINE_GAP) * quality);
+			ctx.drawImage(lineCanvas, 0, rowY);
 		}
-		page.keys[i] = key;
+		ctx.restore();
 	}
-	page.keys.length = lines.length;
+	ctx.globalCompositeOperation = "source-over";
+	ctx.globalAlpha = 1;
 	return page.canvas;
 }
 

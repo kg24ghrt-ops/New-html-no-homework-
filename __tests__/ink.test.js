@@ -1,5 +1,12 @@
 import * as paper from "../js/paper.js";
-import { drawCharacters, inkBaselineY } from "../js/ink.js";
+import {
+	INK_LIMITS,
+	baselineWander,
+	drawCharacters,
+	glyphJitter,
+	inkBaselineY,
+	wordJitter,
+} from "../js/ink.js";
 
 function mockCtx() {
 	const calls = [];
@@ -7,6 +14,12 @@ function mockCtx() {
 		calls,
 		globalAlpha: 1,
 		fillStyle: "",
+		save() {},
+		restore() {},
+		translate() {},
+		rotate() {},
+		transform() {},
+		scale() {},
 		measureText: (text) => ({ width: text.length * 10 }),
 		fillText(text, x, y) {
 			calls.push({ text, x, y, alpha: this.globalAlpha, style: this.fillStyle });
@@ -44,5 +57,25 @@ describe("ink text layout", () => {
 		drawCharacters(before, "Hello world", 100, { pageId: "p1", start: 7 });
 		drawCharacters(after, "Hello world!", 100, { pageId: "p1", start: 7 });
 		expect(after.calls.slice(0, before.calls.length)).toEqual(before.calls);
+	});
+
+	test("visual offsets stay inside their caps", () => {
+		for (let i = 0; i < 500; i++) {
+			const glyph = glyphJitter("page", i, "a");
+			expect(Math.abs(glyph.dx)).toBeLessThanOrEqual(INK_LIMITS.glyphDx + 1e-9);
+			expect(Math.abs(glyph.scale - 1)).toBeLessThanOrEqual(INK_LIMITS.glyphSize + 1e-9);
+			expect(Math.abs(glyph.rotation)).toBeLessThanOrEqual(INK_LIMITS.glyphRotation + 1e-9);
+			expect(Math.abs(glyph.slant)).toBeLessThanOrEqual(INK_LIMITS.glyphSlant + 1e-9);
+
+			const word = wordJitter("page", i);
+			expect(Math.abs(word.dx)).toBeLessThanOrEqual(INK_LIMITS.wordDx + 1e-9);
+
+			const wander = baselineWander(1234 + i, (i * 37) % 164);
+			expect(Math.abs(wander)).toBeLessThanOrEqual(INK_LIMITS.baselineWander + 1e-9);
+		}
+	});
+
+	test("baseline wander returns to zero at the widest line edge", () => {
+		expect(baselineWander(42, 164)).toBeCloseTo(0, 6);
 	});
 });
