@@ -4,6 +4,12 @@
 	font-weight: 400;
 	font-style: normal;
 	font-display: block;
+	/* Equal metrics on both faces keep a Latin line and a Myanmar line on the
+	   same baseline and make every line box exactly one line-height tall. The
+	   transparent textarea and the ink canvas share this stack. */
+	ascent-override: 80%;
+	descent-override: 20%;
+	line-gap-override: 0%;
 }
 
 @font-face {
@@ -12,6 +18,32 @@
 	font-weight: 400;
 	font-style: normal;
 	font-display: block;
+	/* Restrict the Myanmar face to Myanmar code points. Otherwise its Latin
+	   glyphs would win over the generic monospace fallback. */
+	unicode-range: U+1000-109F, U+A9E0-A9FF, U+AA60-AA7F;
+	ascent-override: 80%;
+	descent-override: 20%;
+	line-gap-override: 0%;
+}
+
+/* Monospace mode still uses the bundled Myanmar face for Burmese, while a
+   local monospace face handles Latin. Both carry the same metric overrides so
+   a mixed line keeps one baseline. */
+@font-face {
+	font-family: "MonospaceInk";
+	src:
+		local("DejaVu Sans Mono"),
+		local("Liberation Mono"),
+		local("Roboto Mono"),
+		local("Droid Sans Mono"),
+		local("Menlo"),
+		local("Consolas"),
+		local("Courier New");
+	font-weight: 400;
+	font-style: normal;
+	ascent-override: 80%;
+	descent-override: 20%;
+	line-gap-override: 0%;
 }
 
 :root {
@@ -187,7 +219,9 @@ textarea {
 	resize: none;
 	font-family: var(--ink-font-stack, monospace);
 	color: transparent;
-	caret-color: #1a1a1a;
+	/* The visible caret is painted on the ink canvas; the textarea keeps the
+	   real selection, IME and keyboard behaviour. */
+	caret-color: transparent;
 	padding: 0;
 	margin: 0;
 	box-sizing: border-box;

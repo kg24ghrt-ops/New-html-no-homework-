@@ -20,7 +20,13 @@ Both font files are bundled locally in `fonts/` (no CDN, works offline):
 
 The Handwriting mode uses `Caveat` first and falls back to `Noto Sans Myanmar`
 for Burmese. The Monospace mode is a safe fallback if a device shapes Myanmar
-badly.
+badly; it uses a local monospace face for Latin and the bundled Myanmar face
+for Burmese, with the same metric overrides on both.
+
+The textarea's native caret is hidden. The visible caret is drawn on the ink
+canvas at the measured baseline and the canvas text advance, so it cannot drift
+from the ink when the zoomed textarea font rounds differently from the
+paper-resolution ink.
 
 ## Test
 
@@ -28,10 +34,15 @@ badly.
 npm test
 ```
 
-Uses Jest. Tests cover paper constants, text wrapping and page splitting,
-`paperRect` aspect/fit/mobile behavior, text alignment (canvas x equals
-textarea x, baseline sits above the rule), script-run splitting, whole Myanmar
-runs, visual offset caps, stable per-glyph jitter and line padding.
+Uses Jest (Node). Besides paper constants, text wrapping and page splitting,
+`paperRect` aspect/fit/mobile behavior, script-run splitting, whole Myanmar
+runs, visual offset caps, stable per-glyph jitter and line padding, it covers
+the pure caret math: grapheme snapping, which visual line owns an offset, and
+the x/baseline of a caret at Latin, Myanmar, soft-wrapped and hard-newline
+offsets.
+
+Open the app with `?debug` to see the nominal baseline, the textarea caret rect
+from the mirror Range and each line's drawn bounding box.
 
 ## Controls
 
@@ -50,8 +61,8 @@ runs, visual offset caps, stable per-glyph jitter and line padding.
 
 ## Manual phone checklist
 
-The browser test suite cannot shape Myanmar or place a real caret, so check
-these on a phone (or a mobile emulator) before shipping:
+The browser test suite cannot check every device's Myanmar shaper, so also
+check these on a phone (or a mobile emulator) before shipping:
 
 1. Open the app over `http://` or `https://` (or a browser that allows local
    module/font loading) and wait for the paper to appear.
@@ -76,3 +87,6 @@ these on a phone (or a mobile emulator) before shipping:
    never changes the caret or the live text.
 9. Rotate the device / change the viewport and confirm the red margin, rules
    and textarea text stay in the same place.
+10. Open `?debug`, zoom to 8x and check the red caret rect sits on the blue
+    nominal baseline inside the green line box, for Latin and Myanmar text, in
+    both font modes.

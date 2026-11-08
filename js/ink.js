@@ -38,7 +38,9 @@ export const INK_LIMITS = Object.freeze({
 	glyphRotation: 2 * DEG,
 	glyphSlant: 0.02,
 	wordDx: 0.4 * MM,
-	baselineWander: 0.6 * MM,
+	// Keep the drift smaller than the caret's own stroke so a zoomed-in caret
+	// still looks like it is sitting on the ink.
+	baselineWander: 0.3 * MM,
 	myanmarRotation: 0.3 * DEG,
 	lineRotation: 0.15 * DEG,
 	lineWobble: 0.4 * MM,

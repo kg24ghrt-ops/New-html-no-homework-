@@ -17,7 +17,8 @@ import {
 	MM,
 } from "./paper.js";
 import { FONT_MODES, fontSpec, fontStack, loadInkFonts } from "./fonts.js";
-import { clearInkLineCache, getInkPage, releaseInkPage } from "./ink.js";
+import { clearInkLineCache, getInkPage, inkBaselineY, releaseInkPage } from "./ink.js";
+import { caretMetricsForOffset, lineIndexForOffset, snapToGrapheme } from "./caret.js";
 import { graphemeOffsets, layoutTextLines, splitPage } from "./text.js";
 
 const canvas = document.getElementById("canvas");
@@ -38,6 +39,17 @@ const mirror = document.createElement("div");
 mirror.id = "inkMirror";
 mirror.setAttribute("aria-hidden", "true");
 document.body.appendChild(mirror);
+
+// Zero-size inline-block at a text offset. Its rect.bottom is the real
+// baseline of that line box, so padding can be measured instead of guessed.
+const baselineMarker = document.createElement("span");
+baselineMarker.setAttribute("aria-hidden", "true");
+baselineMarker.style.display = "inline-block";
+baselineMarker.style.width = "0";
+baselineMarker.style.height = "0";
+baselineMarker.style.verticalAlign = "baseline";
+
+const DEBUG = new URLSearchParams(window.location.search).has("debug");
 
 let viewScale = 1;
 let viewX = 0;
@@ -94,23 +106,62 @@ let pendingKeystrokePerf = false;
 let frameCount = 0;
 let fontsReady = false;
 
+// Canvas caret. The textarea keeps the real selection, but its native caret
+// would be laid out at the zoomed font size while the ink is rasterized at
+// paper size; those two advances can differ by a subpixel at fit zoom.
+const CARET_BLINK_MS = 530;
+const CARET_SOLID_MS = 600;
+let caretVisible = true;
+let caretSolidUntil = 0;
+let caretBlinkTimer = null;
+
 const isMobile = window.matchMedia("(pointer: coarse)").matches;
 const INK_QUALITY = isMobile ? 0.5 : 1;
 const SCREEN_QUALITY = isMobile ? 0.75 : 1;
 
-// Measure the same font stack the textarea uses. The textarea has to place its
-// first baseline exactly where the canvas draws line 0.
-const measureCanvas = document.createElement("canvas");
-const measureCtx = measureCanvas.getContext("2d");
+// The textarea has to place its first baseline exactly where the canvas draws
+// line 0. Cache the measured padding per font/zoom.
+const TEXT_PAD_CACHE = { key: "", value: 0 };
 
-function textPadTop(mode = fontMode) {
-	measureCtx.font = fontSpec(mode, FONT_SIZE);
-	const metrics = measureCtx.measureText("Mg");
-	const ascent = metrics.fontBoundingBoxAscent ?? FONT_SIZE * 0.8;
-	const descent = metrics.fontBoundingBoxDescent ?? FONT_SIZE * 0.2;
-	const halfLeading = (LINE_GAP - ascent - descent) / 2;
-	const firstBaseline = LINE_GAP - 1.5 * MM;
-	return Math.max(0, firstBaseline - halfLeading - ascent);
+// The first canvas baseline is TOP_MARGIN + LINE_GAP - 1.5mm. Put a zero-size
+// baseline marker at the start of a line in the mirror and read where the
+// browser actually puts that baseline. No ascent/descent formula involved.
+function probeBaseline(probeText) {
+	mirror.textContent = "";
+	mirror.appendChild(baselineMarker);
+	mirror.appendChild(document.createTextNode(probeText));
+	const mirrorRect = mirror.getBoundingClientRect();
+	const markerRect = baselineMarker.getBoundingClientRect();
+	return markerRect.bottom - mirrorRect.top;
+}
+
+function measureTextPadTop(scale) {
+	const key = [fontMode, scale, mirror.style.fontSize, mirror.style.lineHeight].join("\u0000");
+	if (key === TEXT_PAD_CACHE.key) return TEXT_PAD_CACHE.value;
+
+	const previousPadding = mirror.style.paddingTop;
+	mirror.style.paddingTop = "0px";
+
+	// Measure both scripts: if the Myanmar face moves the line box the two
+	// values differ, which is exactly the misalignment we must not ship.
+	const latin = probeBaseline("Mg");
+	const myanmar = probeBaseline("မြန်မာစာ");
+	if (Math.abs(latin - myanmar) > 0.05) {
+		console.warn(
+			`[caret] baseline differs by ${((myanmar - latin) / scale).toFixed(2)} paper px ` +
+			`between Latin and Myanmar; check font metric overrides`,
+		);
+	}
+
+	// Use the taller of the two line boxes so neither script can push the
+	// first baseline below the canvas one.
+	const firstBaseline = (LINE_GAP - 1.5 * MM) * scale;
+	const padCss = firstBaseline - Math.max(latin, myanmar);
+
+	mirror.style.paddingTop = previousPadding;
+	TEXT_PAD_CACHE.key = key;
+	TEXT_PAD_CACHE.value = padCss / scale;
+	return TEXT_PAD_CACHE.value;
 }
 
 let TEXT_PAD_TOP = 0;
@@ -298,14 +349,21 @@ function updateTextOverlayStyles() {
 	textarea.style.height = ((PAPER_HEIGHT - TOP_MARGIN - BOTTOM_MARGIN) * scale) + "px";
 	textarea.style.fontSize = (FONT_SIZE * scale) + "px";
 	textarea.style.lineHeight = (LINE_GAP * scale) + "px";
-	textarea.style.paddingTop = Math.max(0, TEXT_PAD_TOP * scale) + "px";
 	textarea.style.fontFamily = fontStack(fontMode);
+	textarea.style.verticalAlign = "baseline";
 
 	mirror.style.width = textarea.style.width;
 	mirror.style.fontSize = textarea.style.fontSize;
 	mirror.style.lineHeight = textarea.style.lineHeight;
-	mirror.style.paddingTop = textarea.style.paddingTop;
 	mirror.style.fontFamily = textarea.style.fontFamily;
+	mirror.style.verticalAlign = "baseline";
+
+	// Negative padding is impossible, so clamp once and keep TEXT_PAD_TOP in
+	// step with the value actually applied.
+	TEXT_PAD_TOP = Math.max(0, measureTextPadTop(scale));
+	const padTop = (TEXT_PAD_TOP * scale) + "px";
+	textarea.style.paddingTop = padTop;
+	mirror.style.paddingTop = padTop;
 }
 
 function visualRow(rect, state, lineHeight) {
@@ -392,6 +450,122 @@ function wrappedPage(text, measure) {
 	return getPageLines(text, measure);
 }
 
+// The real caret rect, measured in the mirror at the same offset the textarea
+// uses. The zero-size marker's bottom is the baseline of that line box.
+function mirrorCaretMetrics(offset) {
+	const text = textarea.value;
+	const index = snapToGrapheme(text, offset);
+	updateTextOverlayStyles();
+
+	// Ask the browser which visual line owns this offset. The baseline marker
+	// goes at the start of that line, where a zero-width inline-block cannot
+	// change where a soft wrap fell.
+	const lines = getPageLines(text, ctx);
+	const lineIndex = lineIndexForOffset(lines, index);
+	const lineStart = lines[lineIndex] ? lines[lineIndex].start : 0;
+
+	// mirrorLines() leaves only the last paragraph in the mirror, so put the
+	// whole value back before using a Range over it.
+	mirror.textContent = text;
+	if (!mirror.firstChild) mirror.appendChild(document.createTextNode(""));
+
+	const node = mirror.firstChild;
+	const range = document.createRange();
+	range.setStart(node, index);
+	range.setEnd(node, index);
+	const rects = range.getClientRects();
+	const caretRect = rects.length ? rects[0] : range.getBoundingClientRect();
+
+	const baseRange = document.createRange();
+	baseRange.setStart(node, lineStart);
+	baseRange.setEnd(node, lineStart);
+	baseRange.insertNode(baselineMarker);
+
+	const mirrorRect = mirror.getBoundingClientRect();
+	const markerRect = baselineMarker.getBoundingClientRect();
+	baselineMarker.remove();
+	mirror.normalize();
+
+	const scale = viewScale;
+	return {
+		offset: index,
+		lineIndex,
+		x: (LEFT_MARGIN + TEXT_INSET) + (caretRect.left - mirrorRect.left) / scale,
+		baseline: TOP_MARGIN + (markerRect.bottom - mirrorRect.top) / scale,
+		top: TOP_MARGIN + (caretRect.top - mirrorRect.top) / scale,
+		bottom: TOP_MARGIN + (caretRect.bottom - mirrorRect.top) / scale,
+	};
+}
+
+// Where the canvas actually draws the same offset. Both numbers are in paper
+// pixels, so they can be compared directly regardless of zoom.
+function drawnMetricsAt(offset) {
+	const text = textarea.value;
+	const lines = getPageLines(text, ctx);
+	ctx.font = fontSpec(fontMode, FONT_SIZE);
+	ctx.textBaseline = "alphabetic";
+	return caretMetricsForOffset(
+		text,
+		offset,
+		lines,
+		ctx,
+		LEFT_MARGIN + TEXT_INSET,
+		inkBaselineY,
+	);
+}
+
+// The caret is painted where the ink is drawn, not where the zoomed textarea
+// font happens to round its advance. This is the rect the user actually sees.
+function customCaretMetrics(offset = textarea.selectionStart) {
+	return drawnMetricsAt(offset);
+}
+
+function markCaretSolid() {
+	caretSolidUntil = performance.now() + CARET_SOLID_MS;
+	caretVisible = true;
+}
+
+function startCaretBlink() {
+	if (caretBlinkTimer) return;
+	caretBlinkTimer = setInterval(() => {
+		if (document.activeElement !== textarea) return;
+		// Keep the bar solid while the user is dragging the paper.
+		if (pointers.size > 0 || performance.now() < caretSolidUntil) {
+			if (!caretVisible) {
+				caretVisible = true;
+				scheduleRender();
+			}
+			return;
+		}
+		caretVisible = !caretVisible;
+		scheduleRender();
+	}, CARET_BLINK_MS);
+}
+
+function stopCaretBlink() {
+	if (caretBlinkTimer) {
+		clearInterval(caretBlinkTimer);
+		caretBlinkTimer = null;
+	}
+	caretVisible = false;
+}
+
+function drawCaret() {
+	if (!ctx || !fontsReady) return;
+	if (document.activeElement !== textarea) return;
+	if (textarea.selectionStart !== textarea.selectionEnd) return;
+	if (!caretVisible) return;
+
+	const caret = customCaretMetrics();
+	// Constant on-screen width: a paper-pixel width would become a fat bar at
+	// 8x zoom and vanish at fit zoom on a phone.
+	const width = 1.2 / viewScale;
+	ctx.save();
+	ctx.fillStyle = "rgb(28, 38, 58)";
+	ctx.fillRect(caret.x, caret.baseline - 0.8 * FONT_SIZE, width, FONT_SIZE);
+	ctx.restore();
+}
+
 function rebuildPageCache() {
 	if (!ctx || !bgCanvas) return;
 
@@ -438,6 +612,56 @@ function rebuildPageCache() {
 	}
 }
 
+// ?debug paints the nominal baseline, the real caret rect measured from the
+// mirror and each line's drawn bounding box. All coordinates are paper pixels.
+function drawDebugOverlay() {
+	if (!DEBUG) return;
+
+	const text = textarea.value;
+	const lines = getPageLines(text, ctx);
+	const textX = LEFT_MARGIN + TEXT_INSET;
+	const textWidth = PAPER_WIDTH - RIGHT_MARGIN - textX;
+	const px = 1 / viewScale;
+
+	ctx.save();
+	ctx.lineWidth = Math.max(px, 0.25);
+	ctx.font = fontSpec(fontMode, FONT_SIZE);
+	ctx.textBaseline = "alphabetic";
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const baseline = inkBaselineY(i);
+
+		ctx.strokeStyle = "rgba(30, 120, 255, 0.85)";
+		ctx.beginPath();
+		ctx.moveTo(textX - 1 * MM, baseline);
+		ctx.lineTo(textX + textWidth + 1 * MM, baseline);
+		ctx.stroke();
+
+		ctx.strokeStyle = "rgba(255, 160, 0, 0.35)";
+		ctx.strokeRect(textX, TOP_MARGIN + i * LINE_GAP, textWidth, LINE_GAP);
+
+		const metrics = ctx.measureText(line.text);
+		const ascent = metrics.actualBoundingBoxAscent || FONT_SIZE * 0.8;
+		const descent = metrics.actualBoundingBoxDescent || FONT_SIZE * 0.2;
+		ctx.strokeStyle = "rgba(20, 150, 70, 0.7)";
+		ctx.strokeRect(textX, baseline - ascent, metrics.width, ascent + descent);
+	}
+
+	if (document.activeElement === textarea) {
+		const caret = mirrorCaretMetrics(textarea.selectionStart);
+		const caretTop = caret.bottom > caret.top ? caret.top : caret.baseline - 0.8 * FONT_SIZE;
+		const caretBottom = caret.bottom > caret.top ? caret.bottom : caret.baseline + 0.2 * FONT_SIZE;
+		ctx.strokeStyle = "rgba(220, 0, 0, 0.95)";
+		ctx.strokeRect(caret.x, caretTop, 1.2 / viewScale, Math.max(px, caretBottom - caretTop));
+		ctx.beginPath();
+		ctx.arc(caret.x, caret.baseline, 1.2 * MM, 0, Math.PI * 2);
+		ctx.stroke();
+	}
+
+	ctx.restore();
+}
+
 function render() {
 	if (!ctx || !fontsReady) return;
 
@@ -456,6 +680,8 @@ function render() {
 	ctx.scale(viewScale, viewScale);
 
 	if (pageCanvas) ctx.drawImage(pageCanvas, 0, 0, PAPER_WIDTH, PAPER_HEIGHT);
+	drawCaret();
+	drawDebugOverlay();
 
 	ctx.restore();
 
@@ -685,21 +911,6 @@ function visualViewportBounds() {
 	return { top: vv.offsetTop, bottom: vv.offsetTop + vv.height };
 }
 
-function lineIndexForOffset(lines, index) {
-	for (let i = 0; i < lines.length; i++) {
-		const end = lines[i].start + lines[i].text.length;
-		if (index < end) return i;
-		if (index === end) {
-			const next = lines[i + 1];
-			// A soft wrap has no separator: the next line starts exactly where
-			// this one ends, so the caret belongs on the next visual row.
-			if (next && next.start === end) continue;
-			return i;
-		}
-	}
-	return Math.max(0, lines.length - 1);
-}
-
 function caretLineIndex() {
 	const text = textarea.value;
 	const index = Math.max(0, Math.min(text.length, textarea.selectionStart));
@@ -803,6 +1014,7 @@ canvas.addEventListener("pointerdown", (e) => {
 			pinchStartScale = viewScale;
 		}
 	}
+	markCaretSolid();
 	e.preventDefault();
 }, { passive: false });
 
@@ -852,6 +1064,7 @@ canvas.addEventListener("pointermove", (e) => {
 			dirty = true;
 		}
 	}
+	markCaretSolid();
 	scheduleRender();
 }, { passive: true });
 
@@ -1009,6 +1222,7 @@ textarea.addEventListener("input", () => {
 	dirty = true;
 	pageDirty = true;
 	pendingKeystrokePerf = true;
+	markCaretSolid();
 	scheduleRender();
 	checkPageFlow();
 	ensureCaretVisible();
@@ -1017,12 +1231,31 @@ textarea.addEventListener("input", () => {
 
 textarea.addEventListener("focus", () => {
 	msg.textContent = "";
+	markCaretSolid();
+	startCaretBlink();
 	ensureCaretVisible();
+	scheduleRender();
 });
-textarea.addEventListener("blur", () => { msg.textContent = "Click to type"; });
-textarea.addEventListener("keyup", ensureCaretVisible);
+textarea.addEventListener("blur", () => {
+	msg.textContent = "Click to type";
+	stopCaretBlink();
+	scheduleRender();
+});
+textarea.addEventListener("keydown", () => {
+	markCaretSolid();
+	scheduleRender();
+});
+textarea.addEventListener("keyup", () => {
+	markCaretSolid();
+	ensureCaretVisible();
+	scheduleRender();
+});
 document.addEventListener("selectionchange", () => {
-	if (document.activeElement === textarea) ensureCaretVisible();
+	if (document.activeElement === textarea) {
+		markCaretSolid();
+		ensureCaretVisible();
+		scheduleRender();
+	}
 });
 
 if (window.visualViewport) {
@@ -1272,7 +1505,9 @@ function applyFontMode(mode) {
 	fontMode = mode;
 	document.documentElement.style.setProperty("--ink-font-stack", fontStack(fontMode));
 	textarea.style.fontFamily = fontStack(fontMode);
-	TEXT_PAD_TOP = textPadTop(fontMode);
+	mirror.style.fontFamily = fontStack(fontMode);
+	TEXT_PAD_CACHE.key = "";
+	updateTextOverlayStyles();
 	// The glyphs and the line breaks both change with the font, so drop every
 	// cached raster and re-wrap/re-render from scratch.
 	clearInkLineCache();
@@ -1329,7 +1564,8 @@ async function init() {
 	// must not be rasterized with the fallback face. Resolve both faces first.
 	await loadInkFonts(FONT_SIZE);
 	fontsReady = true;
-	TEXT_PAD_TOP = textPadTop(fontMode);
+	TEXT_PAD_CACHE.key = "";
+	updateTextOverlayStyles();
 	clearInkLineCache();
 	releaseInkPage(INK_QUALITY);
 	releaseInkPage(1);
@@ -1339,6 +1575,103 @@ async function init() {
 	render();
 	updatePageUI();
 	msg.textContent = "Click to type. Pan: drag. Zoom: wheel / pinch. Reset: button or R";
+
+	// Small read-only hooks for manual caret checks. They measure the same
+	// mirror Range and canvas text the app itself uses.
+	window.__b5 = {
+		ready: true,
+		debug: DEBUG,
+		setText(text) {
+			textarea.value = text;
+			pages[currentPage] = text;
+			layoutCacheKey = "";
+			dirty = true;
+			pageDirty = true;
+			render();
+		},
+		setFontMode(mode) {
+			applyFontMode(mode);
+			render();
+		},
+		setZoom(factor) {
+			const fit = fitRect(canvas.clientWidth, canvas.clientHeight);
+			viewScale = fit.scale * factor;
+			viewX = (canvas.clientWidth - PAPER_WIDTH * viewScale) / 2;
+			viewY = (canvas.clientHeight - PAPER_HEIGHT * viewScale) / 2;
+			clampView();
+			dirty = true;
+			render();
+		},
+		getView() {
+			const fit = fitRect(canvas.clientWidth, canvas.clientHeight);
+			return {
+				scale: viewScale,
+				fitScale: fit.scale,
+				textX: LEFT_MARGIN + TEXT_INSET,
+				padTop: TEXT_PAD_TOP,
+				fontMode,
+			};
+		},
+		lines() {
+			return getPageLines(textarea.value, ctx).map((line) => ({
+				text: line.text,
+				start: line.start,
+			}));
+		},
+		boundaries() {
+			const text = textarea.value;
+			const points = [0, text.length];
+			for (const cluster of graphemeOffsets(text)) {
+				points.push(cluster.offset, cluster.offset + cluster.segment.length);
+			}
+			return [...new Set(points)].sort((a, b) => a - b);
+		},
+		caret(offset) {
+			return customCaretMetrics(offset);
+		},
+		nativeCaret(offset) {
+			return mirrorCaretMetrics(offset);
+		},
+		drawn(offset) {
+			return drawnMetricsAt(offset);
+		},
+		check() {
+			let maxBaseline = 0;
+			let maxX = 0;
+			let nativeMaxBaseline = 0;
+			let nativeMaxX = 0;
+			const failures = [];
+			const points = window.__b5.boundaries();
+			for (const offset of points) {
+				const caret = customCaretMetrics(offset);
+				const native = mirrorCaretMetrics(offset);
+				const drawn = drawnMetricsAt(offset);
+				const baselineError = Math.abs(caret.baseline - drawn.baseline);
+				const xError = Math.abs(caret.x - drawn.x);
+				nativeMaxBaseline = Math.max(nativeMaxBaseline, Math.abs(native.baseline - drawn.baseline));
+				nativeMaxX = Math.max(nativeMaxX, Math.abs(native.x - drawn.x));
+				maxBaseline = Math.max(maxBaseline, baselineError);
+				maxX = Math.max(maxX, xError);
+				if (baselineError > 0.3 * MM || xError > 1) {
+					failures.push({ offset, baselineError, xError, caret, native, drawn });
+				}
+			}
+			return {
+				maxBaseline,
+				maxX,
+				nativeMaxBaseline,
+				nativeMaxX,
+				failures,
+				count: points.length,
+			};
+		},
+		focus(offset = 0) {
+			textarea.focus({ preventScroll: true });
+			textarea.setSelectionRange(offset, offset);
+			dirty = true;
+			render();
+		},
+	};
 }
 
 init();
