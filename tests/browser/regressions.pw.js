@@ -61,6 +61,20 @@ test("double-tap on the paper zooms within 600ms", async ({ page }) => {
 	expect((await view(page)).scale).toBeGreaterThan(fitScale * 1.1);
 });
 
+test("double-tap zooms without opening the keyboard", async ({ page }) => {
+	await openApp(page);
+	const box = await page.locator("#canvas").boundingBox();
+	const x = box.x + box.width / 2;
+	const y = box.y + box.height / 2;
+
+	await page.touchscreen.tap(x, y);
+	await page.waitForTimeout(80);
+	await page.touchscreen.tap(x, y);
+	await page.waitForTimeout(500);
+
+	expect(await page.evaluate(() => document.activeElement && document.activeElement.tagName)).not.toBe("TEXTAREA");
+});
+
 test.describe("wide viewport", () => {
 	test.use({ viewport: { width: 1000, height: 500 }, hasTouch: false, isMobile: false });
 

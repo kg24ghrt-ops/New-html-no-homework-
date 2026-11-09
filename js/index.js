@@ -119,6 +119,7 @@ let lastTapTime = 0;
 let lastTapX = 0;
 let lastTapY = 0;
 let gesturePinched = false;
+let tapFocusTimer = null;
 
 let pages = [""];
 let pageIds = [];
@@ -930,6 +931,12 @@ function focusCaretAt(cx, cy) {
 	ensureCaretVisible();
 }
 
+function cancelTapFocus() {
+	if (!tapFocusTimer) return;
+	clearTimeout(tapFocusTimer);
+	tapFocusTimer = null;
+}
+
 // The visual viewport is the part of the page not covered by the soft
 // keyboard. Its height shrinks while the keyboard is open, while the layout
 // viewport (and our fixed canvas) usually stays the same.
@@ -997,6 +1004,7 @@ function finishPointerGesture(pointer, now) {
 	const dy = Math.abs(pointer.y - lastTapY);
 	if (lastTapTime > 0 && dx < 20 && dy < 20 && now - lastTapTime < 300) {
 		lastTapTime = 0;
+		cancelTapFocus();
 		zoomAtTap(cx, cy);
 		return;
 	}
@@ -1004,7 +1012,13 @@ function finishPointerGesture(pointer, now) {
 	lastTapTime = now;
 	lastTapX = pointer.x;
 	lastTapY = pointer.y;
-	focusCaretAt(cx, cy);
+	// Wait for the double-tap window before opening the keyboard. A second
+	// tap cancels this and zooms instead.
+	cancelTapFocus();
+	tapFocusTimer = setTimeout(() => {
+		tapFocusTimer = null;
+		focusCaretAt(cx, cy);
+	}, 300);
 }
 
 canvas.addEventListener("pointerdown", (e) => {
@@ -1012,7 +1026,10 @@ canvas.addEventListener("pointerdown", (e) => {
 	if (e.button !== 0 && e.button !== 1) return;
 
 	const now = performance.now();
-	if (pointers.size === 0) gesturePinched = false;
+	if (pointers.size === 0) {
+		gesturePinched = false;
+		cancelTapFocus();
+	}
 	pointers.set(e.pointerId, {
 		x: e.clientX,
 		y: e.clientY,
