@@ -1714,6 +1714,14 @@ async function init() {
 			dirty = true;
 			render();
 		},
+		setView(x, y, scale = viewScale) {
+			viewScale = scale;
+			viewX = x;
+			viewY = y;
+			clampView();
+			dirty = true;
+			render();
+		},
 		getView() {
 			const fit = fitRect(canvas.clientWidth, canvas.clientHeight);
 			return {
