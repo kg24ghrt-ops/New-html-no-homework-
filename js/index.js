@@ -157,8 +157,10 @@ let caretSolidUntil = 0;
 let caretBlinkTimer = null;
 
 const isMobile = window.matchMedia("(pointer: coarse)").matches;
-const INK_QUALITY = isMobile ? 0.5 : 1;
-const SCREEN_QUALITY = isMobile ? 0.75 : 1;
+// The target phone is fast enough for full-resolution ink and screen layers.
+// Half resolution makes the handwriting visibly blurry.
+const INK_QUALITY = 1;
+const SCREEN_QUALITY = 1;
 
 // The textarea has to place its first baseline exactly where the canvas draws
 // line 0. Cache the measured padding per font/zoom.
@@ -1530,8 +1532,7 @@ function exportPage() {
 	const outCtx = out.getContext("2d");
 	drawBackground(outCtx);
 
-	// Export always uses the full-resolution ink layer, even on phones where
-	// the on-screen layer is half size.
+	// Export always uses the full-resolution ink layer.
 	const wrapped = wrappedPage(pages[currentPage], outCtx);
 	const previous = showThrough && currentPage > 0
 		? wrappedPage(pages[currentPage - 1], outCtx)
