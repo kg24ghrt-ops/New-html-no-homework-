@@ -44,6 +44,17 @@ offsets.
 Open the app with `?debug` to see the nominal baseline, the textarea caret rect
 from the mirror Range and each line's drawn bounding box.
 
+## Before you push
+
+1. `git pull` before editing, and resolve any conflicts first.
+2. `npm test` - all Jest suites pass.
+3. `npm run test:browser` - all Playwright tests pass on the phone viewport.
+4. `git diff HEAD` - read the whole diff and confirm earlier fixes were not
+   reverted.
+5. Commit every new `js/` file. `git status` must show no untracked files under
+   `js/` or `fonts/`; a file missing from the commit leaves the deployed page
+   blank.
+
 ## Controls
 
 - Drag: pan the paper
