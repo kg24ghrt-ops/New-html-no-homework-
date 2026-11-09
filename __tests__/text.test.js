@@ -21,6 +21,19 @@ describe("text wrapping", () => {
 		expect(wrapText("a\u0301b\u0301", 10, measure)).toEqual(["a\u0301", "b\u0301"]);
 	});
 
+	test("keeps leading spaces on an indented line", () => {
+		expect(wrapText("  indented", 100, measure)).toEqual(["  indented"]);
+	});
+
+	test("keeps a line that contains only spaces", () => {
+		expect(wrapText("   ", 100, measure)).toEqual(["   "]);
+	});
+
+	test("counts leading spaces when deciding where a line wraps", () => {
+		// "  abcdef" is 80 units wide; the first chunk is "  abc" (50 units).
+		expect(wrapText("  abcdef", 50, measure)).toEqual(["  abc", "def"]);
+	});
+
 	test("visual lines keep their absolute source offsets", () => {
 		const lines = layoutTextLines("one two three", 60, measure);
 		expect(lines.map((line) => line.text)).toEqual(["one", "two", "three"]);
@@ -33,6 +46,13 @@ describe("text wrapping", () => {
 			{ text: "a", start: 0 },
 			{ text: "", start: 2 },
 			{ text: "b", start: 3 },
+		]);
+	});
+
+	test("indented lines keep their leading spaces and source offsets", () => {
+		expect(layoutTextLines("  one two", 60, measure)).toEqual([
+			{ text: "  one", start: 0 },
+			{ text: "two", start: 6 },
 		]);
 	});
 });

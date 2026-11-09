@@ -65,20 +65,32 @@ function fitWord(word, maxWidth, result, measure) {
 }
 
 function wrapLine(line, maxWidth, result, measure) {
-	const words = line.split(" ");
+	// Leading spaces are part of the line's advance. Dropping them would draw
+	// an indented line at the left edge while the caret stays indented.
+	const leading = line.match(/^ +/)?.[0] ?? "";
+	const body = line.slice(leading.length);
+	if (body === "") {
+		result.push(line);
+		return;
+	}
+
+	const words = body.split(" ");
 	let current = "";
+	let firstWord = true;
 	for (const word of words) {
-		const test = current ? current + " " + word : word;
+		const base = firstWord ? leading + word : word;
+		const test = current ? current + " " + word : base;
 		if (measure.measureText(test).width <= maxWidth) {
 			current = test;
 		} else {
 			if (current) result.push(current);
-			current = word;
-			if (measure.measureText(word).width > maxWidth) {
-				fitWord(word, maxWidth, result, measure);
+			current = base;
+			if (measure.measureText(base).width > maxWidth) {
+				fitWord(base, maxWidth, result, measure);
 				current = "";
 			}
 		}
+		firstWord = false;
 	}
 	if (current) result.push(current);
 }
