@@ -749,7 +749,7 @@ function animate(now) {
 
 function scheduleRender() {
 	dirty = true;
-	if (!rafId && !animating) {
+	if (!rafId) {
 		rafId = requestAnimationFrame(animate);
 	}
 }
