@@ -4,13 +4,15 @@
   "main": "index.js",
   "scripts": {
     "lint": "eslint .",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest --passWithNoTests"
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --passWithNoTests",
+    "test:browser": "playwright test"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "eslint": "^10.13.0",
     "eslint-plugin-sonarjs": "^4.2.2",
     "jest": "^30.5.2"

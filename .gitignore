@@ -1,3 +1,5 @@
 node_modules/
 models.json
 .kilo/
+test-results/
+playwright-report/

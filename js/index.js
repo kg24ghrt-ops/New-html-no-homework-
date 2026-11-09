@@ -1627,9 +1627,36 @@ async function init() {
 			return {
 				scale: viewScale,
 				fitScale: fit.scale,
+				x: viewX,
+				y: viewY,
+				width: canvas.clientWidth,
+				height: canvas.clientHeight,
+				paperWidth: PAPER_WIDTH,
+				paperHeight: PAPER_HEIGHT,
 				textX: LEFT_MARGIN + TEXT_INSET,
 				padTop: TEXT_PAD_TOP,
 				fontMode,
+			};
+		},
+		setPages(nextPages, page = currentPage) {
+			pages = nextPages.slice();
+			pageIds = [];
+			ensurePageIds();
+			currentPage = Math.max(0, Math.min(pages.length - 1, page));
+			textarea.value = pages[currentPage];
+			textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+			layoutCacheKey = "";
+			dirty = true;
+			pageDirty = true;
+			updatePageUI();
+			saveState();
+			render();
+		},
+		getPages() {
+			return {
+				pages: pages.slice(),
+				pageIds: pageIds.slice(),
+				currentPage,
 			};
 		},
 		lines() {
