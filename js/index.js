@@ -1567,6 +1567,7 @@ const ro = new ResizeObserver(() => {
 	clampView();
 	dirty = true;
 	scheduleRender();
+	ensureCaretVisible();
 });
 ro.observe(canvas);
 
