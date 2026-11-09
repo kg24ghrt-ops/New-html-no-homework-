@@ -51,6 +51,47 @@ baselineMarker.style.verticalAlign = "baseline";
 
 const DEBUG = new URLSearchParams(window.location.search).has("debug");
 
+const ERROR_BANNER_ID = "b5Error";
+
+function errorText(error) {
+	const message = error?.message || error?.reason?.message || String(error?.reason ?? error ?? "Unknown error");
+	const file = error?.filename || error?.sourceURL || error?.reason?.fileName;
+	return file ? `${message} (${file})` : message;
+}
+
+function showErrorBanner(text) {
+	let banner = document.getElementById(ERROR_BANNER_ID);
+	if (!banner) {
+		banner = document.createElement("div");
+		banner.id = ERROR_BANNER_ID;
+		banner.setAttribute("role", "alert");
+		document.body.appendChild(banner);
+	}
+
+	let label = banner.querySelector(".b5-error-text");
+	if (!label) {
+		banner.textContent = "";
+		label = document.createElement("span");
+		label.className = "b5-error-text";
+		const close = document.createElement("button");
+		close.type = "button";
+		close.setAttribute("aria-label", "Dismiss error");
+		close.textContent = "\u00d7";
+		close.addEventListener("click", () => banner.remove());
+		banner.appendChild(label);
+		banner.appendChild(close);
+	}
+	label.textContent = text;
+	banner.hidden = false;
+}
+
+window.addEventListener("error", (event) => {
+	showErrorBanner(errorText(event.error || event));
+});
+window.addEventListener("unhandledrejection", (event) => {
+	showErrorBanner(errorText(event.reason));
+});
+
 let viewScale = 1;
 let viewX = 0;
 let viewY = 0;
@@ -1580,15 +1621,49 @@ async function init() {
 	dpr = vs.w > 0 ? canvas.width / vs.w : 1;
 	createBackgroundCache();
 
-	// Baseline placement depends on the real font metrics, and the canvas ink
-	// must not be rasterized with the fallback face. Resolve both faces first.
-	await loadInkFonts(FONT_SIZE);
+	// Baseline placement depends on the real font metrics, but a slow or
+	// hanging font request must never leave a blank page. Paint with the
+	// fallback stack after at most 1500ms, then refresh when the real fonts
+	// arrive.
+	const fontLoad = loadInkFonts(FONT_SIZE);
+	let fontsTimedOut = false;
+	await Promise.race([
+		fontLoad,
+		new Promise((resolve) => {
+			setTimeout(() => {
+				fontsTimedOut = true;
+				resolve(false);
+			}, 1500);
+		}),
+	]);
 	fontsReady = true;
 	TEXT_PAD_CACHE.key = "";
 	updateTextOverlayStyles();
 	clearInkLineCache();
 	releaseInkPage(INK_QUALITY);
 	releaseInkPage(1);
+
+	const refreshFonts = () => {
+		TEXT_PAD_CACHE.key = "";
+		updateTextOverlayStyles();
+		clearInkLineCache();
+		releaseInkPage(INK_QUALITY);
+		releaseInkPage(1);
+		dirty = true;
+		pageDirty = true;
+		scheduleRender();
+	};
+	if (fontsTimedOut) {
+		fontLoad.then((loaded) => {
+			if (loaded) refreshFonts();
+		});
+	}
+	if (document.fonts && document.fonts.ready) {
+		document.fonts.ready.then(refreshFonts);
+	}
+	if (document.fonts && document.fonts.addEventListener) {
+		document.fonts.addEventListener("loadingdone", refreshFonts);
+	}
 
 	resetView();
 	textarea.value = pages[currentPage];
@@ -1721,4 +1796,14 @@ async function init() {
 	};
 }
 
-init();
+async function boot() {
+	try {
+		await init();
+		window.__b5ready = true;
+	} catch (error) {
+		showErrorBanner(errorText(error));
+		console.error(error);
+	}
+}
+
+boot();

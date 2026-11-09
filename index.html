@@ -15,5 +15,24 @@
 </svg>
 </button>
 <script type="module" src="js/index.js"></script>
+<script>
+window.setTimeout(function () {
+	if (window.__b5ready === true || document.getElementById("b5Error")) return;
+	var banner = document.createElement("div");
+	banner.id = "b5Error";
+	banner.setAttribute("role", "alert");
+	var label = document.createElement("span");
+	label.className = "b5-error-text";
+	label.textContent = "The notebook failed to load. A script file may be missing: check js/*.js.";
+	var close = document.createElement("button");
+	close.type = "button";
+	close.setAttribute("aria-label", "Dismiss error");
+	close.textContent = "\u00d7";
+	close.onclick = function () { banner.remove(); };
+	banner.appendChild(label);
+	banner.appendChild(close);
+	document.body.appendChild(banner);
+}, 4000);
+</script>
 </body>
 </html>

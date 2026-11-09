@@ -77,6 +77,34 @@ html, body {
 	z-index: 10;
 }
 
+#b5Error {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 100;
+	box-sizing: border-box;
+	padding: 10px 44px 10px 12px;
+	background: #b3261e;
+	color: #fff;
+	font: 14px/1.4 sans-serif;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+#b5Error button {
+	position: absolute;
+	top: 4px;
+	right: 8px;
+	width: 30px;
+	height: 30px;
+	border: 0;
+	background: transparent;
+	color: #fff;
+	font-size: 22px;
+	line-height: 1;
+	cursor: pointer;
+}
+
 #resetBtn {
 	position: fixed;
 	bottom: 20px;
