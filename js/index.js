@@ -646,13 +646,12 @@ function rebuildPageCache() {
 	pageDirty = false;
 	if (isMobile) {
 		const ms = performance.now() - t0;
-		if (pendingKeystrokePerf) {
-			pendingKeystrokePerf = false;
-			console.log(`[perf] keystroke redraw ${ms.toFixed(1)}ms`);
-		} else {
-			console.log(`[perf] page rebuild ${ms.toFixed(1)}ms`);
+		const kind = pendingKeystrokePerf ? "keystroke redraw" : "page rebuild";
+		pendingKeystrokePerf = false;
+		if (DEBUG) {
+			console.log(`[perf] ${kind} ${ms.toFixed(1)}ms`);
+			window.__b5perf = { keystrokeMs: ms, pageMs: ms };
 		}
-		window.__b5perf = { keystrokeMs: ms, pageMs: ms };
 	}
 }
 
@@ -732,7 +731,7 @@ function render() {
 	dirty = false;
 	if (isMobile && pointers.size > 0) {
 		frameCount++;
-		if (frameCount % 30 === 0) {
+		if (frameCount % 30 === 0 && DEBUG) {
 			const ms = performance.now() - t0;
 			console.log(`[perf] pan frame ${ms.toFixed(1)}ms`);
 			window.__b5perf = { ...(window.__b5perf || {}), panMs: ms };
