@@ -279,7 +279,8 @@ function getLineCanvas(text, quality, options = {}) {
 	const fontMode = options.fontMode ?? "monospace";
 	const pageId = options.pageId ?? "page";
 	const start = options.start ?? 0;
-	const key = [quality, fontMode, pageId, start, text].join("\u0000");
+	const row = options.row ?? 0;
+	const key = [quality, fontMode, pageId, start, row, text].join("\u0000");
 	const cached = lineCache.get(key);
 	if (cached) return cached;
 
@@ -315,11 +316,17 @@ function getLineCanvas(text, quality, options = {}) {
 	ensureGrain();
 	const pattern = g.createPattern(grainTile, "repeat");
 	if (pattern) {
+		// Move the erosion tile by row so two identical lines never share the
+		// exact same fibre holes.
+		const grainX = (row * 137) % GRAIN_SIZE;
+		const grainY = (row * 211) % GRAIN_SIZE;
+		g.save();
 		g.globalCompositeOperation = "destination-out";
 		g.globalAlpha = 1;
 		g.fillStyle = pattern;
-		g.fillRect(0, 0, cssWidth, LINE_CANVAS_HEIGHT);
-		g.globalCompositeOperation = "source-over";
+		g.translate(grainX, grainY);
+		g.fillRect(-grainX, -grainY, cssWidth, LINE_CANVAS_HEIGHT);
+		g.restore();
 	}
 
 	if (lineCache.size >= MAX_LINE_CACHE) lineCache.delete(lineCache.keys().next().value);
@@ -348,6 +355,7 @@ function drawLineSet(ctx, lines, quality, fontMode, pageId, mirrorWidth = 0) {
 			fontMode,
 			pageId,
 			start: line.start,
+			row: i,
 		});
 		if (!lineCanvas) continue;
 		const rowY = Math.round((TOP_MARGIN + i * LINE_GAP - LINE_PAD) * quality);
